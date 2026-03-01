@@ -1,5 +1,7 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+
+import { db } from '@/config/firebase';
 
 export interface Trip {
   id: string;
@@ -18,6 +20,7 @@ export interface ItineraryEvent {
 export interface ItineraryDay {
   id: string;
   label: string;
+  date?: string;
   events: ItineraryEvent[];
 }
 
@@ -70,7 +73,7 @@ interface TripsContextValue {
   deleteFlight: (tripId: string, flightId: string) => void;
   clearFlights: (tripId: string) => void;
   itineraryByTripId: Record<string, ItineraryDay[]>;
-  addItineraryDay: (tripId: string, label: string) => ItineraryDay;
+  addItineraryDay: (tripId: string, label: string, date?: string) => ItineraryDay;
   addItineraryEvent: (tripId: string, dayId: string, name: string, time: string, location?: string) => ItineraryEvent;
   updateItineraryDay: (tripId: string, dayId: string, label: string) => void;
   deleteItineraryDay: (tripId: string, dayId: string) => void;
@@ -109,7 +112,7 @@ interface TripsContextValue {
 
 const TripsContext = createContext<TripsContextValue | undefined>(undefined);
 
-const getTripsStorageKey = (userKey: string) => `tripplanner:data:${userKey}`;
+const sanitizeDocId = (key: string) => key.replace(/[/\\]/g, '_');
 
 type PersistedTripsState = {
   trips: Trip[];
@@ -152,10 +155,10 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
 
       setIsHydrated(false);
       try {
-        const raw = await AsyncStorage.getItem(getTripsStorageKey(userKey));
+        const snap = await getDoc(doc(db, 'users', sanitizeDocId(userKey)));
         if (cancelled) return;
 
-        if (!raw) {
+        if (!snap.exists()) {
           setTrips([]);
           setFlightsByTripId({});
           setItineraryByTripId({});
@@ -165,7 +168,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
           return;
         }
 
-        const parsed = JSON.parse(raw) as Partial<PersistedTripsState>;
+        const parsed = snap.data() as Partial<PersistedTripsState>;
         setTrips(Array.isArray(parsed.trips) ? parsed.trips : []);
         const nextFlights =
           parsed.flightsByTripId && typeof parsed.flightsByTripId === 'object' ? parsed.flightsByTripId : undefined;
@@ -239,7 +242,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
         journalByTripId,
         housingByTripId,
       };
-      await AsyncStorage.setItem(getTripsStorageKey(userKey), JSON.stringify(nextState));
+      await setDoc(doc(db, 'users', sanitizeDocId(userKey)), nextState);
     };
 
     persist();
@@ -339,11 +342,12 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
       setFlightsByTripId((prev) => ({ ...prev, [tripId]: [] }));
     };
 
-    const addItineraryDay: TripsContextValue['addItineraryDay'] = (tripId, label) => {
+    const addItineraryDay: TripsContextValue['addItineraryDay'] = (tripId, label, date) => {
       const currentCount = itineraryByTripId[tripId]?.length ?? 0;
       const createdDay: ItineraryDay = {
-        id: `day-${Date.now()}`,
+        id: `day-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         label: label.trim() ? label.trim() : `Day ${currentCount + 1}`,
+        ...(date ? { date } : {}),
         events: [],
       };
 

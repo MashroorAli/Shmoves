@@ -1,68 +1,42 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import auth, { type FirebaseAuthTypes } from '@react-native-firebase/auth';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
-const AUTH_PHONE_STORAGE_KEY = 'tripplanner:auth:phone';
-
 interface AuthContextValue {
+  user: FirebaseAuthTypes.User | null;
+  uid: string | null;
   phoneNumber: string | null;
   isLoading: boolean;
-  signIn: (phoneNumber: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-const normalizePhoneNumber = (value: string) => {
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-  const hasLeadingPlus = trimmed.startsWith('+');
-  const digits = trimmed.replace(/\D/g, '');
-  return hasLeadingPlus ? `+${digits}` : digits;
-};
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [phoneNumber, setPhoneNumber] = useState<string | null>(null);
+  const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    let cancelled = false;
+    const unsubscribe = auth().onAuthStateChanged((firebaseUser) => {
+      setUser(firebaseUser);
+      setIsLoading(false);
+    });
 
-    const load = async () => {
-      try {
-        const stored = await AsyncStorage.getItem(AUTH_PHONE_STORAGE_KEY);
-        if (cancelled) return;
-        setPhoneNumber(stored ? stored : null);
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    };
-
-    load();
-
-    return () => {
-      cancelled = true;
-    };
+    return unsubscribe;
   }, []);
 
   const value = useMemo<AuthContextValue>(() => {
-    const signIn: AuthContextValue['signIn'] = async (rawPhone) => {
-      const normalized = normalizePhoneNumber(rawPhone);
-      await AsyncStorage.setItem(AUTH_PHONE_STORAGE_KEY, normalized);
-      setPhoneNumber(normalized);
-    };
-
     const signOut: AuthContextValue['signOut'] = async () => {
-      await AsyncStorage.removeItem(AUTH_PHONE_STORAGE_KEY);
-      setPhoneNumber(null);
+      await auth().signOut();
     };
 
     return {
-      phoneNumber,
+      user,
+      uid: user?.uid ?? null,
+      phoneNumber: user?.phoneNumber ?? null,
       isLoading,
-      signIn,
       signOut,
     };
-  }, [isLoading, phoneNumber]);
+  }, [isLoading, user]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

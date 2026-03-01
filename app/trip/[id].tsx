@@ -3,7 +3,7 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import { useFocusEffect } from '@react-navigation/native';
 import { Image as ExpoImage } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -15,6 +15,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -77,8 +78,85 @@ export default function TripDetailsScreen() {
   const journalEntries = tripId ? journalByTripId[tripId] ?? [] : [];
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
   const selectedDay = selectedDayId ? itineraryDays.find((d) => d.id === selectedDayId) : undefined;
+  const [expandedDayIds, setExpandedDayIds] = useState<Set<string>>(new Set());
 
   const [editMode, setEditMode] = useState(false);
+  const itineraryAutoPopulated = useRef(false);
+
+  useEffect(() => {
+    if (
+      activeTab === 'itinerary' &&
+      tripId &&
+      trip?.startDate &&
+      trip?.endDate &&
+      itineraryDays.length === 0 &&
+      !itineraryAutoPopulated.current
+    ) {
+      itineraryAutoPopulated.current = true;
+      const start = new Date(trip.startDate);
+      const end = new Date(trip.endDate);
+      if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end >= start) {
+        const msPerDay = 86400000;
+        const totalDays = Math.round((end.getTime() - start.getTime()) / msPerDay) + 1;
+        for (let i = 0; i < totalDays; i++) {
+          const dayDate = new Date(start.getTime() + i * msPerDay);
+          const iso = dayDate.toISOString().slice(0, 10);
+          addItineraryDay(tripId, `Day ${i + 1}`, iso);
+        }
+      }
+    }
+  }, [activeTab, tripId, trip?.startDate, trip?.endDate, itineraryDays.length, addItineraryDay]);
+
+  const [showItineraryTips, setShowItineraryTips] = useState(false);
+  const [itineraryTipIndex, setItineraryTipIndex] = useState(0);
+  const itineraryTipsShownRef = useRef(false);
+  const helpButtonRef = useRef<View>(null);
+  const pencilButtonRef = useRef<View>(null);
+  const [tipAnchor, setTipAnchor] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+
+  useEffect(() => {
+    if (!showItineraryTips) {
+      setTipAnchor(null);
+      return;
+    }
+    const tip = ITINERARY_TIPS[itineraryTipIndex];
+    const ref =
+      tip?.target === 'pencil' ? pencilButtonRef
+      : tip?.target === 'help' ? helpButtonRef
+      : tip?.target === 'dayCards' ? dayCardsRef
+      : null;
+    if (ref?.current) {
+      setTimeout(() => {
+        ref.current?.measureInWindow((x, y, w, h) => {
+          setTipAnchor({ x, y, w, h });
+        });
+      }, 50);
+    } else {
+      setTipAnchor(null);
+    }
+  }, [showItineraryTips, itineraryTipIndex]);
+
+  const dayCardsRef = useRef<View>(null);
+
+  const ITINERARY_TIPS: { text: string; target: 'dayCards' | 'pencil' | 'help' }[] = [
+    { text: 'Tap any day to expand it and see your events.', target: 'dayCards' },
+    { text: 'Tap the pencil button to enter edit mode — rename or delete days.', target: 'pencil' },
+    { text: 'Tap the ? button anytime to replay these tips.', target: 'help' },
+  ];
+
+  useEffect(() => {
+    if (activeTab === 'itinerary' && !itineraryTipsShownRef.current && tripId) {
+      const key = `itinerary_tips_shown_${tripId}`;
+      AsyncStorage.getItem(key).then((val) => {
+        if (val !== 'true') {
+          setShowItineraryTips(true);
+          setItineraryTipIndex(0);
+          AsyncStorage.setItem(key, 'true');
+        }
+      });
+      itineraryTipsShownRef.current = true;
+    }
+  }, [activeTab, tripId]);
 
   const [dayModalVisible, setDayModalVisible] = useState(false);
   const [dayName, setDayName] = useState('');
@@ -87,6 +165,7 @@ export default function TripDetailsScreen() {
   const [eventModalVisible, setEventModalVisible] = useState(false);
   const [eventName, setEventName] = useState('');
   const [eventTime, setEventTime] = useState('');
+  const [eventTimeDate, setEventTimeDate] = useState(new Date());
   const [eventLocation, setEventLocation] = useState('');
   const [eventError, setEventError] = useState<string | null>(null);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
@@ -149,6 +228,52 @@ export default function TripDetailsScreen() {
   };
 
   const heroMaxHeight = Math.round(Dimensions.get('window').height / 3);
+  const insets = useSafeAreaInsets();
+
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const heroCardOpacity = scrollY.interpolate({
+    inputRange: [0, heroMaxHeight * 0.5],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+  const stickyCardOpacity = scrollY.interpolate({
+    inputRange: [heroMaxHeight * 0.4, heroMaxHeight * 0.75],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
+  const wrapperBgOpacity = scrollY.interpolate({
+    inputRange: [0, heroMaxHeight * 0.3],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
+  const cardAreaHeight = scrollY.interpolate({
+    inputRange: [heroMaxHeight * 0.2, heroMaxHeight * 0.65],
+    outputRange: [0, insets.top + 150],
+    extrapolate: 'clamp',
+  });
+  const [showStickyCard, setShowStickyCard] = useState(false);
+  const stickyFadeAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const threshold = heroMaxHeight * 0.35;
+    const listenerId = scrollY.addListener(({ value }: { value: number }) => {
+      setShowStickyCard((prev) => {
+        if (value > threshold && !prev) return true;
+        if (value <= threshold && prev) return false;
+        return prev;
+      });
+    });
+    return () => { scrollY.removeListener(listenerId); };
+  }, [heroMaxHeight, scrollY]);
+
+  useEffect(() => {
+    Animated.timing(stickyFadeAnim, {
+      toValue: showStickyCard ? 1 : 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [showStickyCard, stickyFadeAnim]);
+
   const [editingJournalEntryId, setEditingJournalEntryId] = useState<string | null>(null);
 
   const [overviewFlightsCollapsed, setOverviewFlightsCollapsed] = useState(false);
@@ -478,11 +603,60 @@ export default function TripDetailsScreen() {
 
   const getTodayIsoDate = () => new Date().toISOString().slice(0, 10);
 
+  const formatTime24 = (date: Date): string => {
+    const h = date.getHours().toString().padStart(2, '0');
+    const m = date.getMinutes().toString().padStart(2, '0');
+    return `${h}:${m}`;
+  };
+
+  const formatTimeDisplay = (time24: string): string => {
+    const parts = time24.split(':');
+    const h = parseInt(parts[0], 10);
+    const m = parts[1] || '00';
+    if (isNaN(h)) return time24;
+    const period = h >= 12 ? 'PM' : 'AM';
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${h12}:${m} ${period}`;
+  };
+
+  const parseTime24ToDate = (time24: string): Date => {
+    const d = new Date();
+    const parts = time24.split(':');
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (!isNaN(h)) d.setHours(h);
+    if (!isNaN(m)) d.setMinutes(m);
+    d.setSeconds(0);
+    d.setMilliseconds(0);
+    return d;
+  };
+
+  const formatDayDate = (iso?: string): string => {
+    if (!iso) return '';
+    const d = new Date(iso + 'T00:00:00');
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  };
+
   const formatParamDate = (value?: string) => {
     if (!value) return '';
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return '';
     return d.toLocaleDateString();
+  };
+
+  const formatTripDateRange = (start?: string, end?: string): string => {
+    if (!start || !end) return '';
+    const s = new Date(start);
+    const e = new Date(end);
+    if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return '';
+    const sameYear = s.getFullYear() === e.getFullYear();
+    const opts: Intl.DateTimeFormatOptions = { month: 'long', day: 'numeric' };
+    const optsWithYear: Intl.DateTimeFormatOptions = { month: 'long', day: 'numeric', year: 'numeric' };
+    if (sameYear) {
+      return `${s.toLocaleDateString(undefined, opts)} – ${e.toLocaleDateString(undefined, opts)}`;
+    }
+    return `${s.toLocaleDateString(undefined, optsWithYear)} – ${e.toLocaleDateString(undefined, optsWithYear)}`;
   };
 
   function parseFlightDateTime(date: string, time: string) {
@@ -1623,276 +1797,331 @@ export default function TripDetailsScreen() {
         return (
           <ThemedView style={styles.tabContent}>
             <ThemedText style={styles.sectionTitle}>Itinerary</ThemedText>
+
             {!tripId ? (
               <ThemedText>Trip not found.</ThemedText>
-            ) : selectedDay ? (
+            ) : (
+              <View ref={dayCardsRef} collapsable={false}>
               <ThemedView style={styles.itineraryContainer}>
-                <View style={styles.itineraryTopRow}>
-                  <Pressable
-                    style={styles.itineraryBackButton}
-                    onPress={() => {
-                      setSelectedDayId(null);
-                    }}>
-                    <ThemedText style={[styles.itineraryBackText, { color: colors.primary }]}>← Days</ThemedText>
-                  </Pressable>
-                </View>
-
-                <ThemedText style={styles.itineraryDayTitle}>{selectedDay.label}</ThemedText>
-
-                {selectedDay.events.length > 0 ? (
-                  <ScrollView style={styles.eventsList} contentContainerStyle={styles.eventsListContent}>
-                    {selectedDay.events
-                      .slice()
-                      .sort((a, b) => a.time.localeCompare(b.time))
-                      .map((e) => (
-                        <ThemedView
-                          key={e.id}
-                          style={[styles.eventCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-                          <View style={styles.eventHeaderRow}>
-                            <ThemedText style={styles.eventName}>{e.name}</ThemedText>
-
-                            {editMode ? (
-                              <View style={styles.inlineActionsRow}>
-                                <Pressable
-                                  style={styles.inlineActionButton}
-                                  onPress={() => {
-                                    setEditingEventId(e.id);
-                                    setEventName(e.name);
-                                    setEventTime(e.time);
-                                    setEventLocation(e.location ?? '');
-                                    setEventError(null);
-                                    setEventModalVisible(true);
-                                  }}>
-                                  <ThemedText style={[styles.inlineActionText, { color: colors.primary }]}>Edit</ThemedText>
-                                </Pressable>
-
-                                <Pressable
-                                  style={styles.inlineActionButton}
-                                  onPress={() => {
-                                    if (!tripId || !selectedDayId) return;
-                                    Alert.alert('Delete event?', 'This cannot be undone.', [
-                                      { text: 'Cancel', style: 'cancel' },
-                                      {
-                                        text: 'Delete',
-                                        style: 'destructive',
-                                        onPress: () => deleteItineraryEvent(tripId, selectedDayId, e.id),
-                                      },
-                                    ]);
-                                  }}>
-                                  <ThemedText
-                                    style={[styles.inlineActionText, styles.destructiveText, { color: colors.destructive }]}
-                                  >
-                                    Delete
-                                  </ThemedText>
-                                </Pressable>
-                              </View>
+                {itineraryDays.length > 0 ? (
+                  itineraryDays.map((day) => {
+                    const isExpanded = expandedDayIds.has(day.id);
+                    return (
+                      <View
+                        key={day.id}
+                        style={[styles.dayCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+                        <Pressable
+                          style={styles.dayCardHeaderRow}
+                          onPress={() => {
+                            setExpandedDayIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(day.id)) next.delete(day.id);
+                              else next.add(day.id);
+                              return next;
+                            });
+                          }}>
+                          <View style={{ flex: 1 }}>
+                            <ThemedText style={styles.dayCardTitle}>{day.label}</ThemedText>
+                            {day.date ? (
+                              <ThemedText style={[styles.dayCardSubtitle, { color: colors.icon }]}>{formatDayDate(day.date)}</ThemedText>
                             ) : null}
                           </View>
-                          <ThemedText style={styles.eventMeta}>Time: {e.time}</ThemedText>
-                          {e.location ? <ThemedText style={styles.eventMeta}>Location: {e.location}</ThemedText> : null}
-                        </ThemedView>
-                      ))}
-                  </ScrollView>
-                ) : (
-                  <ThemedText style={styles.emptyText}>No events yet.</ThemedText>
-                )}
 
-                <Modal visible={eventModalVisible} transparent animationType="fade">
-                  <View style={styles.modalOverlay}>
-                    <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
-                      <ThemedText style={styles.modalTitle}>{editingEventId ? 'Edit Event' : 'Add Event'}</ThemedText>
+                          {editMode ? (
+                            <View style={styles.inlineActionsRow}>
+                              <Pressable
+                                style={styles.inlineActionButton}
+                                onPress={() => {
+                                  setEditingDayId(day.id);
+                                  setDayName(day.label);
+                                  setDayModalVisible(true);
+                                }}>
+                                <ThemedText style={styles.inlineActionText}>Edit</ThemedText>
+                              </Pressable>
 
-                      <TextInput
-                        value={eventName}
-                        onChangeText={setEventName}
-                        placeholder="Name"
-                        placeholderTextColor="#888"
-                        style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                      />
-
-                      <TextInput
-                        value={eventTime}
-                        onChangeText={setEventTime}
-                        placeholder="Time (e.g., 9:00 AM)"
-                        placeholderTextColor="#888"
-                        style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                      />
-
-                      <TextInput
-                        value={eventLocation}
-                        onChangeText={setEventLocation}
-                        placeholder="Location (optional)"
-                        placeholderTextColor="#888"
-                        style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                      />
-
-                      {eventError ? <ThemedText style={styles.modalErrorText}>{eventError}</ThemedText> : null}
-
-                      <View style={styles.modalActions}>
-                        <Pressable
-                          style={[styles.modalButton, { borderColor: colors.border }]}
-                          onPress={() => {
-                            setEventModalVisible(false);
-                            setEventName('');
-                            setEventTime('');
-                            setEventLocation('');
-                            setEventError(null);
-                            setEditingEventId(null);
-                          }}>
-                          <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
-                        </Pressable>
-
-                        <Pressable
-                          style={[
-                            styles.modalButton,
-                            styles.modalPrimaryButton,
-                            { backgroundColor: colors.primary, borderColor: colors.primary },
-                          ]}
-                          onPress={() => {
-                            if (!tripId || !selectedDayId) return;
-                            const name = eventName.trim();
-                            const time = eventTime.trim();
-                            const location = eventLocation.trim();
-
-                            if (!name || !time) {
-                              setEventError('Name and time are required.');
-                              return;
-                            }
-
-                            if (editingEventId) {
-                              updateItineraryEvent(tripId, selectedDayId, editingEventId, {
-                                name,
-                                time,
-                                location: location ? location : undefined,
-                              });
-                            } else {
-                              addItineraryEvent(tripId, selectedDayId, name, time, location ? location : undefined);
-                            }
-
-                            setEventModalVisible(false);
-                            setEventName('');
-                            setEventTime('');
-                            setEventLocation('');
-                            setEventError(null);
-                            setEditingEventId(null);
-                          }}>
-                          <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Save</ThemedText>
-                        </Pressable>
-                      </View>
-                    </View>
-                  </View>
-                </Modal>
-              </ThemedView>
-            ) : (
-              <ThemedView style={styles.itineraryContainer}>
-                <Modal visible={dayModalVisible} transparent animationType="fade">
-                  <View style={styles.modalOverlay}>
-                    <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
-                      <ThemedText style={styles.modalTitle}>{editingDayId ? 'Edit Day' : 'Add Day'}</ThemedText>
-
-                      <TextInput
-                        value={dayName}
-                        onChangeText={setDayName}
-                        placeholder="Day name"
-                        placeholderTextColor="#888"
-                        style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                      />
-
-                      <View style={styles.modalActions}>
-                        <Pressable
-                          style={[styles.modalButton, { borderColor: colors.border }]}
-                          onPress={() => {
-                            setDayModalVisible(false);
-                            setDayName('');
-                            setEditingDayId(null);
-                          }}>
-                          <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
-                        </Pressable>
-
-                        <Pressable
-                          style={[
-                            styles.modalButton,
-                            styles.modalPrimaryButton,
-                            { backgroundColor: colors.primary, borderColor: colors.primary },
-                          ]}
-                          onPress={() => {
-                            if (!tripId) return;
-                            const label = dayName.trim();
-
-                            if (editingDayId) {
-                              updateItineraryDay(tripId, editingDayId, label);
-                              setDayModalVisible(false);
-                              setDayName('');
-                              setEditingDayId(null);
-                              return;
-                            }
-
-                            const day = addItineraryDay(tripId, label);
-                            setDayModalVisible(false);
-                            setDayName('');
-                            setEditingDayId(null);
-                            setSelectedDayId(day.id);
-                          }}>
-                          <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Save</ThemedText>
-                        </Pressable>
-                      </View>
-                    </View>
-                  </View>
-                </Modal>
-
-                {itineraryDays.length > 0 ? (
-                  itineraryDays.map((day) => (
-                    <Pressable
-                      key={day.id}
-                      style={[styles.dayCard, { borderColor: colors.border, backgroundColor: colors.surface }]}
-                      onPress={() => {
-                        if (!editMode) setSelectedDayId(day.id);
-                      }}>
-                      <View style={styles.dayCardHeaderRow}>
-                        <ThemedText style={styles.dayCardTitle}>{day.label}</ThemedText>
-
-                        {editMode ? (
-                          <View style={styles.inlineActionsRow}>
-                            <Pressable
-                              style={styles.inlineActionButton}
-                              onPress={() => {
-                                setEditingDayId(day.id);
-                                setDayName(day.label);
-                                setDayModalVisible(true);
-                              }}>
-                              <ThemedText style={styles.inlineActionText}>Edit</ThemedText>
-                            </Pressable>
-
-                            <Pressable
-                              style={styles.inlineActionButton}
-                              onPress={() => {
-                                if (!tripId) return;
-                                Alert.alert('Delete day?', 'All events in this day will be removed.', [
-                                  { text: 'Cancel', style: 'cancel' },
-                                  {
-                                    text: 'Delete',
-                                    style: 'destructive',
-                                    onPress: () => {
-                                      deleteItineraryDay(tripId, day.id);
-                                      if (selectedDayId === day.id) setSelectedDayId(null);
+                              <Pressable
+                                style={styles.inlineActionButton}
+                                onPress={() => {
+                                  if (!tripId) return;
+                                  Alert.alert('Delete day?', 'All events in this day will be removed.', [
+                                    { text: 'Cancel', style: 'cancel' },
+                                    {
+                                      text: 'Delete',
+                                      style: 'destructive',
+                                      onPress: () => {
+                                        deleteItineraryDay(tripId, day.id);
+                                        setExpandedDayIds((prev) => {
+                                          const next = new Set(prev);
+                                          next.delete(day.id);
+                                          return next;
+                                        });
+                                      },
                                     },
-                                  },
-                                ]);
+                                  ]);
+                                }}>
+                                <ThemedText style={[styles.inlineActionText, styles.destructiveText]}>Delete</ThemedText>
+                              </Pressable>
+                            </View>
+                          ) : (
+                            <IconSymbol
+                              name={isExpanded ? 'chevron.right' : 'chevron.right'}
+                              size={16}
+                              color={colors.icon}
+                              style={{ transform: [{ rotate: isExpanded ? '90deg' : '0deg' }] }}
+                            />
+                          )}
+                        </Pressable>
+
+                        {isExpanded ? (
+                          <View style={styles.dayCardExpandedContent}>
+                            {day.events.length > 0 ? (
+                              day.events
+                                .slice()
+                                .sort((a, b) => a.time.localeCompare(b.time))
+                                .map((e) => (
+                                  <ThemedView
+                                    key={e.id}
+                                    style={[styles.eventCard, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+                                    <View style={styles.eventCardRow}>
+                                      <View style={[styles.eventTimePill, { backgroundColor: colors.primary + '18' }]}>
+                                        <IconSymbol name="clock" size={13} color={colors.primary} />
+                                        <ThemedText style={[styles.eventTimePillText, { color: colors.primary }]}>
+                                          {formatTimeDisplay(e.time)}
+                                        </ThemedText>
+                                      </View>
+
+                                      {editMode ? (
+                                        <View style={styles.eventCardActions}>
+                                          <Pressable
+                                            hitSlop={8}
+                                            onPress={() => {
+                                              setSelectedDayId(day.id);
+                                              setEditingEventId(e.id);
+                                              setEventName(e.name);
+                                              setEventTime(e.time);
+                                              setEventTimeDate(parseTime24ToDate(e.time));
+                                              setEventLocation(e.location ?? '');
+                                              setEventError(null);
+                                              setEventModalVisible(true);
+                                            }}>
+                                            <IconSymbol name="pencil" size={16} color={colors.icon} />
+                                          </Pressable>
+
+                                          <Pressable
+                                            hitSlop={8}
+                                            onPress={() => {
+                                              if (!tripId) return;
+                                              Alert.alert('Delete event?', 'This cannot be undone.', [
+                                                { text: 'Cancel', style: 'cancel' },
+                                                {
+                                                  text: 'Delete',
+                                                  style: 'destructive',
+                                                  onPress: () => deleteItineraryEvent(tripId, day.id, e.id),
+                                                },
+                                              ]);
+                                            }}>
+                                            <IconSymbol name="trash" size={16} color={colors.destructive} />
+                                          </Pressable>
+                                        </View>
+                                      ) : null}
+                                    </View>
+
+                                    <ThemedText style={styles.eventName}>{e.name}</ThemedText>
+
+                                    {e.location ? (
+                                      <View style={styles.eventLocationRow}>
+                                        <IconSymbol name="mappin.and.ellipse" size={13} color={colors.icon} />
+                                        <ThemedText style={[styles.eventLocationText, { color: colors.icon }]}>{e.location}</ThemedText>
+                                      </View>
+                                    ) : null}
+                                  </ThemedView>
+                                ))
+                            ) : (
+                              <View style={[styles.emptyEventsCard, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+                                <ThemedText style={styles.emptyEventsEmoji}>📋</ThemedText>
+                                <ThemedText style={[styles.emptyEventsTitle, { color: colors.text }]}>Nothing planned yet</ThemedText>
+                                <ThemedText style={[styles.emptyEventsHint, { color: colors.icon }]}>
+                                  Tap below to start filling in your day
+                                </ThemedText>
+                              </View>
+                            )}
+
+                            <Pressable
+                              style={[styles.addEventInlineButton, { borderColor: colors.border }]}
+                              onPress={() => {
+                                setSelectedDayId(day.id);
+                                setEventName('');
+                                setEventTime('');
+                                setEventTimeDate(new Date());
+                                setEventLocation('');
+                                setEventError(null);
+                                setEditingEventId(null);
+                                setEventModalVisible(true);
                               }}>
-                              <ThemedText style={[styles.inlineActionText, styles.destructiveText]}>Delete</ThemedText>
+                              <IconSymbol name="plus" size={16} color={colors.primary} />
+                              <ThemedText style={[styles.addEventInlineText, { color: colors.primary }]}>Add Event</ThemedText>
                             </Pressable>
                           </View>
                         ) : null}
                       </View>
-
-                      <ThemedText style={styles.dayCardSubtitle}>{day.events.length} events</ThemedText>
-                    </Pressable>
-                  ))
+                    );
+                  })
                 ) : (
                   <ThemedText>Your days will appear here.</ThemedText>
                 )}
               </ThemedView>
+              </View>
             )}
+
+            <Modal visible={dayModalVisible} transparent animationType="fade">
+              <View style={styles.modalOverlay}>
+                <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
+                  <ThemedText style={styles.modalTitle}>
+                    {editingDayId ? 'Give a headline to your day!' : 'Add Day'}
+                  </ThemedText>
+
+                  <TextInput
+                    value={dayName}
+                    onChangeText={setDayName}
+                    placeholder={editingDayId ? 'e.g. Beach Day, City Tour...' : 'Day name'}
+                    placeholderTextColor="#888"
+                    style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+                  />
+
+                  <View style={styles.modalActions}>
+                    <Pressable
+                      style={[styles.modalButton, { borderColor: colors.border }]}
+                      onPress={() => {
+                        setDayModalVisible(false);
+                        setDayName('');
+                        setEditingDayId(null);
+                      }}>
+                      <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
+                    </Pressable>
+
+                    <Pressable
+                      style={[
+                        styles.modalButton,
+                        styles.modalPrimaryButton,
+                        { backgroundColor: colors.primary, borderColor: colors.primary },
+                      ]}
+                      onPress={() => {
+                        if (!tripId) return;
+                        const label = dayName.trim();
+
+                        if (editingDayId) {
+                          updateItineraryDay(tripId, editingDayId, label);
+                          setDayModalVisible(false);
+                          setDayName('');
+                          setEditingDayId(null);
+                          return;
+                        }
+
+                        const day = addItineraryDay(tripId, label);
+                        setDayModalVisible(false);
+                        setDayName('');
+                        setEditingDayId(null);
+                        setExpandedDayIds((prev) => new Set(prev).add(day.id));
+                      }}>
+                      <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Save</ThemedText>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
+            <Modal visible={eventModalVisible} transparent animationType="fade">
+              <View style={styles.modalOverlay}>
+                <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
+                  <ThemedText style={styles.modalTitle}>{editingEventId ? 'Edit Event' : 'Add Event'}</ThemedText>
+
+                  <TextInput
+                    value={eventName}
+                    onChangeText={setEventName}
+                    placeholder="Event name"
+                    placeholderTextColor="#888"
+                    style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+                  />
+
+                  <ThemedText style={styles.eventModalSectionLabel}>Time</ThemedText>
+                  <View style={[styles.timePickerContainer, { borderColor: colors.border }]}>
+                    <DateTimePicker
+                      value={eventTimeDate}
+                      mode="time"
+                      display="spinner"
+                      onChange={(_event: DateTimePickerEvent, date?: Date) => {
+                        if (date instanceof Date && !Number.isNaN(date.getTime())) {
+                          setEventTimeDate(date);
+                        }
+                      }}
+                    />
+                  </View>
+
+                  <TextInput
+                    value={eventLocation}
+                    onChangeText={setEventLocation}
+                    placeholder="Location (optional)"
+                    placeholderTextColor="#888"
+                    style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+                  />
+
+                  {eventError ? <ThemedText style={styles.modalErrorText}>{eventError}</ThemedText> : null}
+
+                  <View style={styles.modalActions}>
+                    <Pressable
+                      style={[styles.modalButton, { borderColor: colors.border }]}
+                      onPress={() => {
+                        setEventModalVisible(false);
+                        setEventName('');
+                        setEventTime('');
+                        setEventLocation('');
+                        setEventError(null);
+                        setEditingEventId(null);
+                      }}>
+                      <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
+                    </Pressable>
+
+                    <Pressable
+                      style={[
+                        styles.modalButton,
+                        styles.modalPrimaryButton,
+                        { backgroundColor: colors.primary, borderColor: colors.primary },
+                      ]}
+                      onPress={() => {
+                        if (!tripId || !selectedDayId) return;
+                        const name = eventName.trim();
+                        const time = formatTime24(eventTimeDate);
+                        const location = eventLocation.trim();
+
+                        if (!name) {
+                          setEventError('Event name is required.');
+                          return;
+                        }
+
+                        if (editingEventId) {
+                          updateItineraryEvent(tripId, selectedDayId, editingEventId, {
+                            name,
+                            time,
+                            location: location ? location : undefined,
+                          });
+                        } else {
+                          addItineraryEvent(tripId, selectedDayId, name, time, location ? location : undefined);
+                        }
+
+                        setEventModalVisible(false);
+                        setEventName('');
+                        setEventTime('');
+                        setEventLocation('');
+                        setEventError(null);
+                        setEditingEventId(null);
+                      }}>
+                      <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Save</ThemedText>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
           </ThemedView>
         );
       case 'finances':
@@ -2232,7 +2461,8 @@ export default function TripDetailsScreen() {
     <ThemedView style={styles.container}>
       <ScrollView
         style={{ flex: 1 }}
-        scrollEventThrottle={1}
+        scrollEventThrottle={16}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: false })}
         bounces
         alwaysBounceVertical
         overScrollMode="always"
@@ -2280,13 +2510,11 @@ export default function TripDetailsScreen() {
             </Animated.View>
           ) : null}
           <View style={styles.heroOverlay} />
-          <View style={styles.heroContent}>
+          <Animated.View style={[styles.heroContent, { opacity: heroCardOpacity }]}>
             <View style={[styles.heroDetailsCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <ThemedText style={[styles.tripDestination, { color: colors.text }]}>{trip?.destination ?? ''}</ThemedText>
               <ThemedText style={[styles.tripLocationText, { color: colors.icon }]}>
-                {trip?.startDate && trip?.endDate
-                  ? `${formatParamDate(trip.startDate)} – ${formatParamDate(trip.endDate)}`
-                  : ''}
+                {formatTripDateRange(trip?.startDate, trip?.endDate)}
               </ThemedText>
 
               <View style={styles.heroAvatarsRow}>
@@ -2305,11 +2533,57 @@ export default function TripDetailsScreen() {
                 </Pressable>
               </View>
             </View>
-          </View>
+          </Animated.View>
         </View>
 
         {/* Child 1: Sticky header — Tabs + edit overlay */}
-        <View style={[styles.stickyHeaderWrapper, { backgroundColor: colors.background }]}>
+        <Animated.View
+          style={[
+            styles.stickyHeaderWrapper,
+            {
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: showStickyCard ? 0.14 : 0,
+              shadowRadius: 8,
+              elevation: showStickyCard ? 6 : 0,
+            },
+          ]}>
+          <Animated.View
+            style={[StyleSheet.absoluteFill, { backgroundColor: colors.background, opacity: wrapperBgOpacity }]}
+            pointerEvents="none"
+          />
+          <Animated.View style={{ height: cardAreaHeight, overflow: 'hidden' }}>
+            <Animated.View
+              style={[
+                styles.heroDetailsCard,
+                styles.stickyDetailsCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                  opacity: stickyFadeAnim,
+                  marginTop: insets.top + 8,
+                },
+              ]}
+              pointerEvents="none">
+              <ThemedText style={[styles.tripDestination, { color: colors.text }]}>{trip?.destination ?? ''}</ThemedText>
+              <ThemedText style={[styles.tripLocationText, { color: colors.icon }]}>
+                {formatTripDateRange(trip?.startDate, trip?.endDate)}
+              </ThemedText>
+              <View style={styles.heroAvatarsRow}>
+                {tripPeople.slice(0, 6).map((p) => (
+                  <View
+                    key={p.id}
+                    style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+                    <ThemedText style={styles.personAvatarText}>{getInitials(p.name)}</ThemedText>
+                  </View>
+                ))}
+                <View style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+                  <IconSymbol name="plus" size={18} color={colors.primary} />
+                </View>
+              </View>
+            </Animated.View>
+          </Animated.View>
+
           <ThemedView style={[styles.tabsContainer, { backgroundColor: colors.surfaceMuted }]}>
             {tabs.map((tab) => (
               <Pressable
@@ -2326,7 +2600,7 @@ export default function TripDetailsScreen() {
           </ThemedView>
 
           <View style={styles.globalEditOverlay} pointerEvents="box-none">
-            {activeTab === 'overview' ? null : (
+            {activeTab === 'overview' || activeTab === 'itinerary' ? null : (
               <Pressable
                 style={[
                   styles.globalPlusButton,
@@ -2335,23 +2609,6 @@ export default function TripDetailsScreen() {
                 ]}
                 onPress={() => {
                   if (!tripId) return;
-                  if (activeTab === 'itinerary') {
-                    if (selectedDayId) {
-                      setEventName('');
-                      setEventTime('');
-                      setEventLocation('');
-                      setEventError(null);
-                      setEditingEventId(null);
-                      setEventModalVisible(true);
-                    } else {
-                      setSelectedDayId(null);
-                      setEditingDayId(null);
-                      setDayName(`Day ${itineraryDays.length + 1}`);
-                      setDayModalVisible(true);
-                    }
-                    return;
-                  }
-
                   if (activeTab === 'finances') {
                     openExpenseModal();
                     return;
@@ -2370,11 +2627,7 @@ export default function TripDetailsScreen() {
                   }
                 }}>
                 <IconSymbol name="plus" size={22} color={colors.primary} />
-                {activeTab === 'itinerary' ? (
-                  <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
-                    {selectedDayId ? 'Add Event' : 'Add Day'}
-                  </ThemedText>
-                ) : activeTab === 'finances' ? (
+                {activeTab === 'finances' ? (
                   <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
                     Add Expense
                   </ThemedText>
@@ -2390,7 +2643,7 @@ export default function TripDetailsScreen() {
               </Pressable>
             )}
           </View>
-        </View>
+        </Animated.View>
 
         {/* Child 2: Tab content */}
         <View style={styles.content}>
@@ -2404,15 +2657,30 @@ export default function TripDetailsScreen() {
           styles.bottomNavOverlay,
           { bottom: 24 },
         ]}>
-        <Pressable
-          style={[
-            styles.bottomNavButton,
-            editMode ? { backgroundColor: colors.primary, borderColor: colors.primary } : null,
-            !editMode ? { backgroundColor: colors.surface, borderColor: colors.border } : null,
-          ]}
-          onPress={() => setEditMode((v) => !v)}>
-          <IconSymbol name="pencil" size={22} color={editMode ? '#fff' : colors.primary} />
-        </Pressable>
+        {activeTab === 'itinerary' ? (
+          <View ref={helpButtonRef} collapsable={false}>
+            <Pressable
+              style={[styles.bottomNavButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              onPress={() => {
+                setShowItineraryTips(true);
+                setItineraryTipIndex(0);
+              }}>
+              <IconSymbol name="questionmark.circle" size={22} color={colors.primary} />
+            </Pressable>
+          </View>
+        ) : null}
+
+        <View ref={pencilButtonRef} collapsable={false}>
+          <Pressable
+            style={[
+              styles.bottomNavButton,
+              editMode ? { backgroundColor: colors.primary, borderColor: colors.primary } : null,
+              !editMode ? { backgroundColor: colors.surface, borderColor: colors.border } : null,
+            ]}
+            onPress={() => setEditMode((v) => !v)}>
+            <IconSymbol name="pencil" size={22} color={editMode ? '#fff' : colors.primary} />
+          </Pressable>
+        </View>
 
         <Pressable
           style={[styles.bottomNavButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
@@ -2420,6 +2688,88 @@ export default function TripDetailsScreen() {
           <IconSymbol name="house.fill" size={22} color={colors.primary} />
         </Pressable>
       </View>
+
+      {showItineraryTips ? (() => {
+        const tip = ITINERARY_TIPS[itineraryTipIndex];
+        if (!tipAnchor) return null;
+
+        const screenH = Dimensions.get('window').height;
+        const screenW = Dimensions.get('window').width;
+        const bubbleMargin = 24;
+
+        let bubblePosition: { top?: number; bottom?: number };
+        let arrowLeft: number;
+
+        if (tip?.target === 'dayCards') {
+          // Position bubble ABOVE the day cards, arrow points DOWN to them
+          bubblePosition = { top: Math.max(tipAnchor.y - 14, 80) };
+          arrowLeft = screenW / 2 - bubbleMargin - 10;
+        } else {
+          // Position bubble ABOVE the button, arrow points DOWN to it
+          bubblePosition = { bottom: screenH - tipAnchor.y + 14 };
+          arrowLeft = tipAnchor.x + tipAnchor.w / 2 - bubbleMargin - 10;
+        }
+
+        return (
+          <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+            <Pressable
+              style={[StyleSheet.absoluteFill, styles.tipOverlayBackdrop]}
+              onPress={() => {
+                if (itineraryTipIndex < ITINERARY_TIPS.length - 1) {
+                  setItineraryTipIndex((i) => i + 1);
+                } else {
+                  setShowItineraryTips(false);
+                  setItineraryTipIndex(0);
+                }
+              }}
+            />
+
+            <View
+              pointerEvents="box-none"
+              style={[
+                styles.tipBubblePositioned,
+                { backgroundColor: colors.surface },
+                bubblePosition,
+              ]}>
+              <ThemedText style={styles.tipCounter}>
+                {itineraryTipIndex + 1}/{ITINERARY_TIPS.length}
+              </ThemedText>
+              <ThemedText style={styles.tipText}>
+                {tip?.text}
+              </ThemedText>
+              <View style={styles.tipActions}>
+                {itineraryTipIndex > 0 ? (
+                  <Pressable
+                    style={[styles.tipButton, { borderColor: colors.border }]}
+                    onPress={() => setItineraryTipIndex((i) => i - 1)}>
+                    <ThemedText style={[styles.tipButtonText, { color: colors.primary }]}>Back</ThemedText>
+                  </Pressable>
+                ) : (
+                  <View />
+                )}
+                {itineraryTipIndex < ITINERARY_TIPS.length - 1 ? (
+                  <Pressable
+                    style={[styles.tipButton, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                    onPress={() => setItineraryTipIndex((i) => i + 1)}>
+                    <ThemedText style={[styles.tipButtonText, { color: '#fff' }]}>Next</ThemedText>
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    style={[styles.tipButton, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                    onPress={() => {
+                      setShowItineraryTips(false);
+                      setItineraryTipIndex(0);
+                    }}>
+                    <ThemedText style={[styles.tipButtonText, { color: '#fff' }]}>Got it!</ThemedText>
+                  </Pressable>
+                )}
+              </View>
+
+              <View style={[styles.tipArrowDown, { left: arrowLeft, borderTopColor: colors.surface }]} />
+            </View>
+          </View>
+        );
+      })() : null}
     </ThemedView>
   );
 }
@@ -2469,6 +2819,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     gap: 6,
+  },
+  stickyDetailsCard: {
+    marginTop: 8,
+    marginHorizontal: 16,
+    marginBottom: 10,
   },
   header: {
     paddingTop: 60,
@@ -2969,11 +3324,15 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   dayCardTitle: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '600',
   },
+  dayCardExpandedContent: {
+    marginTop: 10,
+    gap: 8,
+  },
   dayCardSubtitle: {
-    fontSize: 13,
+    fontSize: 14,
     opacity: 0.7,
   },
   itineraryBackButton: {
@@ -3288,5 +3647,149 @@ const styles = StyleSheet.create({
   },
   modalPrimaryButtonText: {
     color: '#fff',
+  },
+  tipOverlayBackdrop: {
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  tipBubblePositioned: {
+    position: 'absolute',
+    left: 24,
+    right: 24,
+    borderRadius: 16,
+    padding: 24,
+    gap: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  tipArrowDown: {
+    position: 'absolute',
+    bottom: -10,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 10,
+    borderRightWidth: 10,
+    borderTopWidth: 10,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+  },
+  tipArrowUp: {
+    position: 'absolute',
+    top: -10,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 10,
+    borderRightWidth: 10,
+    borderBottomWidth: 10,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+  },
+  tipCounter: {
+    fontSize: 12,
+    fontWeight: '700',
+    opacity: 0.45,
+    textAlign: 'right',
+  },
+  tipText: {
+    fontSize: 16,
+    fontWeight: '500',
+    lineHeight: 23,
+  },
+  tipActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  tipButton: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  tipButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  emptyEventsCard: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    gap: 6,
+  },
+  emptyEventsEmoji: {
+    fontSize: 28,
+    marginBottom: 4,
+  },
+  emptyEventsTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  emptyEventsHint: {
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  addEventInlineButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  addEventInlineText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  eventModalSectionLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    opacity: 0.6,
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  timePickerContainer: {
+    borderWidth: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: 8,
+  },
+  eventCardRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  eventTimePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  eventTimePillText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  eventCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  eventLocationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  eventLocationText: {
+    fontSize: 13,
   },
 });

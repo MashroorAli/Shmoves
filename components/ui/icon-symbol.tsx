@@ -21,6 +21,10 @@ const MAPPING = {
   'chevron.right': 'chevron-right',
   pencil: 'edit',
   plus: 'add',
+  'questionmark.circle': 'help-outline',
+  'mappin.and.ellipse': 'place',
+  'trash': 'delete-outline',
+  'clock': 'schedule',
 } as IconMapping;
 
 /**

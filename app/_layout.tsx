@@ -36,23 +36,23 @@ export default function RootLayout() {
 function RootLayoutGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const segments = useSegments();
-  const { phoneNumber, isLoading } = useAuth();
+  const { uid, isLoading } = useAuth();
 
   useEffect(() => {
     if (isLoading) return;
     const inAuth = segments[0] === 'auth';
 
-    if (!phoneNumber && !inAuth) {
+    if (!uid && !inAuth) {
       router.replace('/auth');
       return;
     }
 
-    if (phoneNumber && inAuth) {
+    if (uid && inAuth) {
       router.replace('/(tabs)');
     }
-  }, [isLoading, phoneNumber, router, segments]);
+  }, [isLoading, uid, router, segments]);
 
   if (isLoading) return null;
 
-  return <TripsProvider userKey={phoneNumber}>{children}</TripsProvider>;
+  return <TripsProvider userKey={uid}>{children}</TripsProvider>;
 }
