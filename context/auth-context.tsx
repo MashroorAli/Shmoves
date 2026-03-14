@@ -1,8 +1,12 @@
-import auth, { type FirebaseAuthTypes } from '@react-native-firebase/auth';
+import { getAuth, onAuthStateChanged, signOut as firebaseSignOut, type User } from 'firebase/auth';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
+import { app } from '@/config/firebase';
+
+const auth = getAuth(app);
+
 interface AuthContextValue {
-  user: FirebaseAuthTypes.User | null;
+  user: User | null;
   uid: string | null;
   phoneNumber: string | null;
   isLoading: boolean;
@@ -12,11 +16,11 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = auth().onAuthStateChanged((firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
       setIsLoading(false);
     });
@@ -26,7 +30,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<AuthContextValue>(() => {
     const signOut: AuthContextValue['signOut'] = async () => {
-      await auth().signOut();
+      await firebaseSignOut(auth);
     };
 
     return {

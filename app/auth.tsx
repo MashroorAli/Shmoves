@@ -1,4 +1,4 @@
-import firebaseAuth, { type FirebaseAuthTypes } from '@react-native-firebase/auth';
+import { getAuth, signInWithPhoneNumber, type ConfirmationResult } from 'firebase/auth';
 import React, { useCallback, useState } from 'react';
 import {
     ActivityIndicator,
@@ -13,6 +13,9 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { app } from '@/config/firebase';
+
+const firebaseAuth = getAuth(app);
 
 type Step = 'phone' | 'otp';
 
@@ -24,7 +27,7 @@ export default function AuthScreen() {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [confirmation, setConfirmation] =
-    useState<FirebaseAuthTypes.ConfirmationResult | null>(null);
+    useState<ConfirmationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -49,7 +52,7 @@ export default function AuthScreen() {
 
     try {
       const normalized = normalizePhone(raw);
-      const result = await firebaseAuth().signInWithPhoneNumber(normalized);
+      const result = await signInWithPhoneNumber(firebaseAuth, normalized);
       setConfirmation(result);
       setStep('otp');
     } catch (e: any) {
