@@ -1,9 +1,7 @@
-import { getAuth, onAuthStateChanged, signOut as firebaseSignOut, type User } from 'firebase/auth';
+import { type User } from '@supabase/supabase-js';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
-import { app } from '@/config/firebase';
-
-const auth = getAuth(app);
+import { supabase } from '@/config/supabase';
 
 interface AuthContextValue {
   user: User | null;
@@ -20,23 +18,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
       setIsLoading(false);
     });
 
-    return unsubscribe;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setIsLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const value = useMemo<AuthContextValue>(() => {
     const signOut: AuthContextValue['signOut'] = async () => {
-      await firebaseSignOut(auth);
+      await supabase.auth.signOut();
     };
 
     return {
       user,
-      uid: user?.uid ?? null,
-      phoneNumber: user?.phoneNumber ?? null,
+      uid: user?.id ?? null,
+      phoneNumber: user?.phone ?? null,
       isLoading,
       signOut,
     };
