@@ -839,7 +839,7 @@ export default function TripDetailsScreen() {
     setFlightModalVisible(true);
   };
 
-  const FLIGHTAPI_KEY = process.env.EXPO_PUBLIC_FLIGHTAPI_KEY;
+  const AVIATIONSTACK_KEY = process.env.EXPO_PUBLIC_AVIATIONSTACK_KEY;
 
   const formatDateLabel = (isoDate?: string) => {
     if (!isoDate) return '';
@@ -855,7 +855,7 @@ export default function TripDetailsScreen() {
     return `${y}-${m}-${d}`;
   };
 
-  const toFlightApiDateParam = (isoDate: string) => isoDate.replace(/-/g, '');
+  // AviationStack uses YYYY-MM-DD format natively — no transformation needed.
 
   const airlineOptions = [
     { name: 'American Airlines', iata: 'AA' },
@@ -891,8 +891,8 @@ export default function TripDetailsScreen() {
   ];
 
   const lookupFlightDetails = async () => {
-    if (!FLIGHTAPI_KEY) {
-      setFlightError('Missing flight API key. Set EXPO_PUBLIC_FLIGHTAPI_KEY and try again.');
+    if (!AVIATIONSTACK_KEY) {
+      setFlightError('Missing flight API key. Set EXPO_PUBLIC_AVIATIONSTACK_KEY and try again.');
       return;
     }
 
@@ -910,54 +910,54 @@ export default function TripDetailsScreen() {
     setFlightError(null);
 
     try {
-      const dateParam = toFlightApiDateParam(date);
-      const url = `https://api.flightapi.io/airline/${encodeURIComponent(FLIGHTAPI_KEY)}?num=${encodeURIComponent(
-        String(flightNumOnly),
-      )}&name=${encodeURIComponent(airlineIata)}&date=${encodeURIComponent(dateParam)}`;
+      const flightIata = `${airlineIata}${flightNumOnly}`;
+      // AviationStack free tier is HTTP only — HTTPS requires a paid plan.
+      const url = `http://api.aviationstack.com/v1/flights?access_key=${encodeURIComponent(AVIATIONSTACK_KEY)}&flight_iata=${encodeURIComponent(flightIata)}&flight_date=${encodeURIComponent(date)}`;
 
       const res = await fetch(url);
       const json = (await res.json()) as any;
 
       if (!res.ok) {
-        const message = typeof json?.message === 'string' ? json.message : undefined;
+        const message = typeof json?.error?.message === 'string' ? json.error.message : undefined;
         setFlightError(`Flight lookup error: ${message ?? 'Request failed.'}`);
         return;
       }
 
-      if (!Array.isArray(json) || json.length === 0) {
+      const flights = json?.data;
+      if (!Array.isArray(flights) || flights.length === 0) {
         setFlightError('No matching flight found. Double-check the airline, flight number, and date.');
         return;
       }
 
-      // Response may be an array with separate departure/arrival objects.
-      const departure = (json.find((x: any) => x?.departure)?.departure ?? json[0]?.departure) as any | undefined;
-      const arrival = (json.find((x: any) => x?.arrival)?.arrival ?? json[1]?.arrival) as any | undefined;
+      const flight = flights[0];
+      const departure = flight?.departure;
+      const arrival = flight?.arrival;
+      const airlineName: string | undefined = flight?.airline?.name;
 
-      const depDateTime: string | undefined =
-        departure?.departureDateTime ?? departure?.scheduledDateTime ?? departure?.estimatedDateTime;
-      const arrDateTime: string | undefined = arrival?.arrivalDateTime ?? arrival?.scheduledDateTime ?? arrival?.estimatedDateTime;
+      const depScheduled: string | undefined = departure?.scheduled ?? departure?.estimated ?? departure?.actual;
+      const arrScheduled: string | undefined = arrival?.scheduled ?? arrival?.estimated ?? arrival?.actual;
 
-      const datePart = typeof depDateTime === 'string' ? depDateTime.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] : undefined;
-      const timePart = typeof depDateTime === 'string' ? depDateTime.match(/T(\d{2}:\d{2})/)?.[1] : undefined;
-      const arrDatePart = typeof arrDateTime === 'string' ? arrDateTime.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] : undefined;
-      const arrTimePart = typeof arrDateTime === 'string' ? arrDateTime.match(/T(\d{2}:\d{2})/)?.[1] : undefined;
+      const datePart = typeof depScheduled === 'string' ? depScheduled.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] : undefined;
+      const timePart = typeof depScheduled === 'string' ? depScheduled.match(/T(\d{2}:\d{2})/)?.[1] : undefined;
+      const arrDatePart = typeof arrScheduled === 'string' ? arrScheduled.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] : undefined;
+      const arrTimePart = typeof arrScheduled === 'string' ? arrScheduled.match(/T(\d{2}:\d{2})/)?.[1] : undefined;
 
       if (datePart) setFlightDepartureDate(datePart);
       if (timePart) setFlightDepartureTime(timePart);
       if (arrDatePart) setFlightArrivalDate(arrDatePart);
       if (arrTimePart) setFlightArrivalTime(arrTimePart);
 
-      // FlightAPI response doesn't consistently include airline name; use what the user selected.
-      setFlightAirline(flightLookupAirlineQuery.trim() ? flightLookupAirlineQuery.trim() : airlineIata);
-      setFlightNumber(`${airlineIata}${flightNumOnly}`);
+      // AviationStack returns the full airline name — use it if available.
+      setFlightAirline(airlineName ?? (flightLookupAirlineQuery.trim() ? flightLookupAirlineQuery.trim() : airlineIata));
+      setFlightNumber(flightIata);
 
-      const fromCode = departure?.airportCode;
-      const toCode = arrival?.airportCode;
+      const fromCode = departure?.iata;
+      const toCode = arrival?.iata;
       if (typeof fromCode === 'string' && fromCode.trim()) setFlightFrom(fromCode.trim());
       if (typeof toCode === 'string' && toCode.trim()) setFlightTo(toCode.trim());
 
-      const fromCity = departure?.airportCity;
-      const toCity = arrival?.airportCity;
+      const fromCity = departure?.city ?? departure?.airport;
+      const toCity = arrival?.city ?? arrival?.airport;
       if (typeof fromCity === 'string' && fromCity.trim()) setFlightFromCity(fromCity.trim());
       if (typeof toCity === 'string' && toCity.trim()) setFlightToCity(toCity.trim());
 
