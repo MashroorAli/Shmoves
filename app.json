@@ -10,8 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.tripplanner.app",
-      "googleServicesFile": "./GoogleService-Info.plist"
+      "bundleIdentifier": "com.tripplanner.app"
     },
     "android": {
       "adaptiveIcon": {
@@ -22,8 +21,7 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.tripplanner.app",
-      "googleServicesFile": "./google-services.json"
+      "package": "com.tripplanner.app"
     },
     "web": {
       "output": "static",
@@ -44,9 +42,7 @@
         }
       ],
       "expo-font",
-      "expo-web-browser",
-      "@react-native-firebase/app",
-      "@react-native-firebase/auth"
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,
