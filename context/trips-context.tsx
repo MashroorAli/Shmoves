@@ -1,7 +1,6 @@
-import { doc, getDoc, setDoc } from 'firebase/firestore';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
-import { db } from '@/config/firebase';
+import { supabase } from '@/config/supabase';
 
 export interface Trip {
   id: string;
@@ -112,8 +111,6 @@ interface TripsContextValue {
 
 const TripsContext = createContext<TripsContextValue | undefined>(undefined);
 
-const sanitizeDocId = (key: string) => key.replace(/[/\\]/g, '_');
-
 type PersistedTripsState = {
   trips: Trip[];
   flightsByTripId: Record<string, FlightInfo[]>;
@@ -155,10 +152,15 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
 
       setIsHydrated(false);
       try {
-        const snap = await getDoc(doc(db, 'users', sanitizeDocId(userKey)));
+        const { data, error } = await supabase
+          .from('user_data')
+          .select('data')
+          .eq('user_id', userKey)
+          .maybeSingle();
         if (cancelled) return;
+        if (error) throw error;
 
-        if (!snap.exists()) {
+        if (!data) {
           setTrips([]);
           setFlightsByTripId({});
           setItineraryByTripId({});
@@ -168,7 +170,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
           return;
         }
 
-        const parsed = snap.data() as Partial<PersistedTripsState>;
+        const parsed = data.data as Partial<PersistedTripsState>;
         setTrips(Array.isArray(parsed.trips) ? parsed.trips : []);
         const nextFlights =
           parsed.flightsByTripId && typeof parsed.flightsByTripId === 'object' ? parsed.flightsByTripId : undefined;
@@ -242,7 +244,9 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
         journalByTripId,
         housingByTripId,
       };
-      await setDoc(doc(db, 'users', sanitizeDocId(userKey)), nextState);
+      await supabase
+        .from('user_data')
+        .upsert({ user_id: userKey, data: nextState });
     };
 
     persist();

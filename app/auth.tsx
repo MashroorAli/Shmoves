@@ -1,4 +1,3 @@
-import { getAuth, signInWithPhoneNumber, type ConfirmationResult } from 'firebase/auth';
 import React, { useCallback, useState } from 'react';
 import {
     ActivityIndicator,
@@ -13,9 +12,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { app } from '@/config/firebase';
-
-const firebaseAuth = getAuth(app);
+import { supabase } from '@/config/supabase';
 
 type Step = 'phone' | 'otp';
 
@@ -26,8 +23,6 @@ export default function AuthScreen() {
   const [step, setStep] = useState<Step>('phone');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [otpCode, setOtpCode] = useState('');
-  const [confirmation, setConfirmation] =
-    useState<ConfirmationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -52,8 +47,8 @@ export default function AuthScreen() {
 
     try {
       const normalized = normalizePhone(raw);
-      const result = await signInWithPhoneNumber(firebaseAuth, normalized);
-      setConfirmation(result);
+      const { error: err } = await supabase.auth.signInWithOtp({ phone: normalized });
+      if (err) throw err;
       setStep('otp');
     } catch (e: any) {
       setError(e?.message || 'Failed to send verification code.');
@@ -63,7 +58,6 @@ export default function AuthScreen() {
   }, [phoneNumber]);
 
   const verifyCode = useCallback(async () => {
-    if (!confirmation) return;
     const code = otpCode.trim();
 
     if (code.length < 6) {
@@ -75,12 +69,18 @@ export default function AuthScreen() {
     setLoading(true);
 
     try {
-      await confirmation.confirm(code);
+      const normalized = normalizePhone(phoneNumber.trim());
+      const { error: err } = await supabase.auth.verifyOtp({
+        phone: normalized,
+        token: code,
+        type: 'sms',
+      });
+      if (err) throw err;
     } catch (e: any) {
       setError(e?.message || 'Invalid code. Please try again.');
       setLoading(false);
     }
-  }, [confirmation, otpCode]);
+  }, [phoneNumber, otpCode]);
 
   return (
     <ThemedView style={styles.container}>
@@ -159,7 +159,6 @@ export default function AuthScreen() {
                 onPress={() => {
                   setStep('phone');
                   setOtpCode('');
-                  setConfirmation(null);
                   setError(null);
                 }}>
                 <ThemedText style={[styles.linkText, { color: colors.primary }]}>
