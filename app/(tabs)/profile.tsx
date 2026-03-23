@@ -1,3 +1,4 @@
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -12,6 +13,8 @@ import {
   View,
 } from 'react-native';
 
+import { router } from 'expo-router';
+
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
@@ -20,7 +23,7 @@ import { supabase } from '@/config/supabase';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function ProfileScreen() {
-  const { uid } = useAuth();
+  const { uid, signOut } = useAuth();
   const theme = useColorScheme() ?? 'light';
   const colors = Colors[theme];
 
@@ -127,12 +130,18 @@ export default function ProfileScreen() {
       const ext = avatarUri.split('.').pop() ?? 'jpg';
       const filePath = `${uid}/avatar.${ext}`;
 
-      const response = await fetch(avatarUri);
-      const blob = await response.blob();
+      const base64 = await FileSystem.readAsStringAsync(avatarUri, {
+        encoding: 'base64',
+      });
+      const binaryStr = atob(base64);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
 
       const { error: uploadError } = await supabase.storage
         .from('avatars')
-        .upload(filePath, blob, { upsert: true, contentType: `image/${ext}` });
+        .upload(filePath, bytes.buffer, { upsert: true, contentType: `image/${ext}` });
 
       if (!uploadError) {
         const { data: urlData } = supabase.storage
@@ -146,13 +155,12 @@ export default function ProfileScreen() {
 
     const { error } = await supabase
       .from('profiles')
-      .update(updates)
-      .eq('id', uid);
+      .upsert({ id: uid, ...updates });
 
     setSaving(false);
 
     if (error) {
-      Alert.alert('Error', 'Could not save profile. Please try again.');
+      Alert.alert('Error', error.message || 'Could not save profile. Please try again.');
       return;
     }
 
@@ -223,6 +231,17 @@ export default function ProfileScreen() {
         <ThemedText style={styles.saveButtonText}>
           {saving ? 'Saving...' : 'Save'}
         </ThemedText>
+      </Pressable>
+
+      <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+      <Pressable
+        onPress={async () => {
+          await signOut();
+          router.replace('/auth');
+        }}
+        style={styles.signOutButton}>
+        <ThemedText style={styles.signOutText}>Sign Out</ThemedText>
       </Pressable>
     </ThemedView>
   );
@@ -298,5 +317,20 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  divider: {
+    height: 1,
+    borderRadius: 1,
+    marginTop: 32,
+    marginBottom: 8,
+  },
+  signOutButton: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  signOutText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#d33',
   },
 });
