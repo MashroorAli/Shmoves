@@ -1,25 +1,22 @@
 import { useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import React, { useMemo } from 'react';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
-import { useAuth } from '@/context/auth-context';
 import { useSharedTrips } from '@/context/shared-trips-context';
 import { type Trip, useTrips } from '@/context/trips-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function MyTripsScreen() {
   const router = useRouter();
-  const { trips, deleteTrip } = useTrips();
+  const { trips } = useTrips();
   const { sharedTrips, pendingInvites, acceptInvite, declineInvite } = useSharedTrips();
-  const { signOut } = useAuth();
   const theme = useColorScheme() ?? 'light';
   const colors = Colors[theme];
 
-  const [editMode, setEditMode] = useState(false);
 
   const parseLocalDate = (value?: string) => {
     if (!value) return undefined;
@@ -70,7 +67,7 @@ export default function MyTripsScreen() {
   // Merge personal trips and shared trips into a single list
   type MergedTrip = Trip & { isShared?: boolean; sharedTripId?: string };
 
-  const { upcomingTrips, pastTrips } = useMemo(() => {
+  const { upcomingTrips, pastTrips, daysUntilNext } = useMemo(() => {
     const today = new Date();
     const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
@@ -113,17 +110,21 @@ export default function MyTripsScreen() {
       return bEnd - aEnd;
     });
 
-    return { upcomingTrips: upcoming, pastTrips: past };
+    const nextStart = upcoming[0] ? parseLocalDate(upcoming[0].startDate) : undefined;
+    let daysUntilNext: number | null = null;
+    if (nextStart) {
+      const diff = nextStart.getTime() - todayStart.getTime();
+      daysUntilNext = Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+    }
+
+    return { upcomingTrips: upcoming, pastTrips: past, daysUntilNext };
   }, [trips, sharedTrips]);
 
   const renderTripCard = (trip: MergedTrip) => (
     <Pressable
       key={trip.sharedTripId ?? trip.id}
       style={[styles.tripCard, { borderColor: colors.border, backgroundColor: colors.surface }]}
-      onPress={() => {
-        if (editMode) return;
-        handleTripPress(trip);
-      }}>
+      onPress={() => handleTripPress(trip)}>
       <View style={styles.tripCardTopRow}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <ThemedText style={styles.tripDestination}>{trip.destination}</ThemedText>
@@ -131,24 +132,6 @@ export default function MyTripsScreen() {
             <IconSymbol name="person.2.fill" size={14} color={colors.icon} />
           ) : null}
         </View>
-        {editMode && !trip.isShared ? (
-          <Pressable
-            onPress={(e) => {
-              e.stopPropagation();
-              Alert.alert('Delete trip?', 'This cannot be undone.', [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Delete',
-                  style: 'destructive',
-                  onPress: () => {
-                    deleteTrip(trip.id);
-                  },
-                },
-              ]);
-            }}>
-            <ThemedText style={[styles.deleteText, { color: colors.destructive }]}>Delete</ThemedText>
-          </Pressable>
-        ) : null}
       </View>
       <ThemedText style={styles.tripDates}>{formatTripMonthRange(trip.startDate, trip.endDate)}</ThemedText>
     </Pressable>
@@ -158,31 +141,15 @@ export default function MyTripsScreen() {
     <ThemedView style={styles.container}>
       <ThemedView style={styles.header}>
         <View style={styles.headerRow}>
-          <ThemedText type="title">My Trips</ThemedText>
-          <View style={styles.headerActions}>
-            <Pressable
-              onPress={() => {
-                setEditMode((v) => !v);
-              }}>
-              <ThemedText style={[styles.signOutText, { color: colors.primary }]}>{editMode ? 'Done' : 'Edit'}</ThemedText>
-            </Pressable>
-            <Pressable
-              onPress={async () => {
-                await signOut();
-                router.replace('/auth');
-              }}>
-              <ThemedText style={[styles.signOutText, { color: colors.primary }]}>Sign out</ThemedText>
-            </Pressable>
-          </View>
+          <ThemedText type="title">My Shmoves</ThemedText>
         </View>
       </ThemedView>
 
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ gap: 16, paddingBottom: 40 }}>
-        {/* Pending Invitations */}
-        {pendingInvites.length > 0 ? (
-          <>
-            <ThemedText style={styles.sectionHeader}>Pending Invitations</ThemedText>
-            {pendingInvites.map((invite) => (
+      <ScrollView style={{ flex: 1, marginTop: 30 }} contentContainerStyle={{ gap: 16, paddingBottom: 40 }}>
+        {/* Invited */}
+        <>
+          <ThemedText style={styles.sectionHeader}>Invites</ThemedText>
+          {pendingInvites.length > 0 ? pendingInvites.map((invite) => (
               <View
                 key={invite.memberRowId}
                 style={[styles.inviteCard, { borderColor: colors.primary, backgroundColor: colors.surface }]}>
@@ -210,9 +177,20 @@ export default function MyTripsScreen() {
                   </Pressable>
                 </View>
               </View>
-            ))}
-          </>
-        ) : null}
+          )) : (
+            <ThemedText style={[styles.placeholder, { marginBottom: 4 }]}>No pending invites.</ThemedText>
+          )}
+        </>
+
+        <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+        <ThemedText style={styles.sectionHeader}>
+          {daysUntilNext === null
+            ? 'Upcoming'
+            : daysUntilNext === 0
+            ? 'Upcoming - Today!'
+            : `Upcoming - ${daysUntilNext} day${daysUntilNext === 1 ? '' : 's'} left`}
+        </ThemedText>
 
         {upcomingTrips.length > 0 ? (
           upcomingTrips.map(renderTripCard)
@@ -220,18 +198,25 @@ export default function MyTripsScreen() {
           <ThemedText style={styles.placeholder}>Your saved trips will appear here.</ThemedText>
         ) : null}
 
+        <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+        <ThemedText style={styles.sectionHeader}>Past</ThemedText>
+
         {pastTrips.length > 0 ? (
-          <>
-            <ThemedText style={styles.sectionHeader}>Past Trips</ThemedText>
-            {pastTrips.map(renderTripCard)}
-          </>
-        ) : null}
+          pastTrips.map(renderTripCard)
+        ) : (
+          <ThemedText style={styles.placeholder}>No past trips yet.</ThemedText>
+        )}
       </ScrollView>
     </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
+  divider: {
+    height: 1,
+    borderRadius: 1,
+  },
   container: {
     flex: 1,
     padding: 24,
@@ -243,11 +228,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
   },
   signOutText: {
     color: '#007AFF',

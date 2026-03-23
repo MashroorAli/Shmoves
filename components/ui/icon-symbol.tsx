@@ -31,6 +31,8 @@ const MAPPING = {
   'calendar': 'calendar-today',
   'doc.fill': 'description',
   'photo': 'image',
+  'camera.fill': 'photo-camera',
+  'briefcase.fill': 'work',
 } as IconMapping;
 
 /**
