@@ -9,11 +9,20 @@ export interface Trip {
   endDate: string;
 }
 
+export interface TicketAttachment {
+  id: string;
+  name: string;
+  url: string;
+  type: 'pdf' | 'image';
+}
+
 export interface ItineraryEvent {
   id: string;
   name: string;
   time: string;
   location?: string;
+  notes?: string;
+  tickets?: TicketAttachment[];
 }
 
 export interface ItineraryDay {
@@ -60,6 +69,8 @@ export interface JournalEntry {
   id: string;
   date: string;
   text: string;
+  isShared?: boolean;
+  authorId?: string;
 }
 
 interface TripsContextValue {
@@ -73,14 +84,14 @@ interface TripsContextValue {
   clearFlights: (tripId: string) => void;
   itineraryByTripId: Record<string, ItineraryDay[]>;
   addItineraryDay: (tripId: string, label: string, date?: string) => ItineraryDay;
-  addItineraryEvent: (tripId: string, dayId: string, name: string, time: string, location?: string) => ItineraryEvent;
+  addItineraryEvent: (tripId: string, dayId: string, name: string, time: string, location?: string, notes?: string, tickets?: TicketAttachment[]) => ItineraryEvent;
   updateItineraryDay: (tripId: string, dayId: string, label: string) => void;
   deleteItineraryDay: (tripId: string, dayId: string) => void;
   updateItineraryEvent: (
     tripId: string,
     dayId: string,
     eventId: string,
-    updates: { name: string; time: string; location?: string }
+    updates: { name: string; time: string; location?: string; notes?: string; tickets?: TicketAttachment[] }
   ) => void;
   deleteItineraryEvent: (tripId: string, dayId: string, eventId: string) => void;
 
@@ -97,8 +108,8 @@ interface TripsContextValue {
   deleteExpense: (tripId: string, expenseId: string) => void;
 
   journalByTripId: Record<string, JournalEntry[]>;
-  addJournalEntry: (tripId: string, entry: { date: string; text: string }) => JournalEntry;
-  updateJournalEntry: (tripId: string, entryId: string, updates: { text: string }) => void;
+  addJournalEntry: (tripId: string, entry: { date: string; text: string; isShared?: boolean; authorId?: string }) => JournalEntry;
+  updateJournalEntry: (tripId: string, entryId: string, updates: { text: string; isShared?: boolean }) => void;
   deleteJournalEntry: (tripId: string, entryId: string) => void;
 
   housingByTripId: Record<string, TripHousing[]>;
@@ -366,12 +377,14 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
       return createdDay;
     };
 
-    const addItineraryEvent: TripsContextValue['addItineraryEvent'] = (tripId, dayId, name, time, location) => {
+    const addItineraryEvent: TripsContextValue['addItineraryEvent'] = (tripId, dayId, name, time, location, notes, tickets) => {
       const createdEvent: ItineraryEvent = {
         id: `event-${Date.now()}`,
         name,
         time,
         location,
+        notes: notes?.trim() || undefined,
+        tickets: tickets && tickets.length > 0 ? tickets : undefined,
       };
 
       setItineraryByTripId((prev) => {
@@ -424,6 +437,8 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
               name: nextName || e.name,
               time: nextTime || e.time,
               location: nextLocation ? nextLocation : undefined,
+              notes: updates.notes?.trim() || undefined,
+              tickets: updates.tickets !== undefined ? updates.tickets : e.tickets,
             };
           });
           return { ...day, events: nextEvents };
@@ -498,6 +513,8 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
         id: `journal-${Date.now()}`,
         date: entry.date,
         text: entry.text,
+        isShared: entry.isShared,
+        authorId: entry.authorId,
       };
 
       setJournalByTripId((prev) => {
@@ -514,8 +531,9 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
     const updateJournalEntry: TripsContextValue['updateJournalEntry'] = (tripId, entryId, updates) => {
       setJournalByTripId((prev) => {
         const current = prev[tripId] ?? [];
-        const nextText = updates.text;
-        const next = current.map((e) => (e.id === entryId ? { ...e, text: nextText } : e));
+        const next = current.map((e) =>
+          e.id === entryId ? { ...e, text: updates.text, isShared: updates.isShared } : e,
+        );
         return { ...prev, [tripId]: next };
       });
     };

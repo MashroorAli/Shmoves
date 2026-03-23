@@ -25,6 +25,12 @@ const MAPPING = {
   'mappin.and.ellipse': 'place',
   'trash': 'delete-outline',
   'clock': 'schedule',
+  'globe': 'public',
+  'lock.fill': 'lock',
+  'person.crop.circle': 'person',
+  'calendar': 'calendar-today',
+  'doc.fill': 'description',
+  'photo': 'image',
 } as IconMapping;
 
 /**

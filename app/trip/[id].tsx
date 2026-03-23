@@ -4,14 +4,23 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Image as ExpoImage } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import * as Contacts from 'expo-contacts';
+import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
+import * as WebBrowser from 'expo-web-browser';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   Dimensions,
+  Linking,
   Modal,
+  PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   TextInput,
   View,
 } from 'react-native';
@@ -21,8 +30,11 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
-import { type TripHousing, useTrips } from '@/context/trips-context';
+import { useAuth } from '@/context/auth-context';
+import { useSharedTrips } from '@/context/shared-trips-context';
+import { type TicketAttachment, type TripHousing, useTrips } from '@/context/trips-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { supabase } from '@/config/supabase';
 
 type CachedHeroImages = {
   fetchedAt: number;
@@ -35,6 +47,165 @@ type TripPerson = {
   name: string;
 };
 
+// ─── SwipeableDayCard ────────────────────────────────────────────────────────
+const SWIPE_THRESHOLD = 40;
+
+function SwipeableDayCard({
+  onDelete,
+  onEdit,
+  colors,
+  children,
+}: {
+  onDelete: () => void;
+  onEdit: () => void;
+  colors: typeof import('@/constants/theme').Colors.light;
+  children: React.ReactNode;
+}) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  // Tracks which direction the current swipe is going so we show the right action bg
+  const swipeDir = useRef<'left' | 'right' | null>(null);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      // Take over when movement is clearly horizontal
+      onMoveShouldSetPanResponder: (_, { dx, dy }) =>
+        Math.abs(dx) > 6 && Math.abs(dx) > Math.abs(dy) * 1.5,
+      onPanResponderGrant: () => {
+        swipeDir.current = null;
+      },
+      onPanResponderMove: (_, { dx }) => {
+        if (swipeDir.current === null) {
+          swipeDir.current = dx < 0 ? 'left' : 'right';
+        }
+        // Clamp: left max -120, right max +120, with soft resistance beyond threshold
+        const clamped =
+          dx < 0
+            ? Math.max(dx, -120)
+            : Math.min(dx, 120);
+        translateX.setValue(clamped);
+      },
+      onPanResponderRelease: (_, { dx }) => {
+        if (dx < -SWIPE_THRESHOLD) {
+          // Swipe left past threshold → delete
+          Animated.timing(translateX, {
+            toValue: -400,
+            duration: 220,
+            useNativeDriver: true,
+          }).start(() => {
+            onDelete();
+            translateX.setValue(0);
+          });
+        } else if (dx > SWIPE_THRESHOLD) {
+          // Swipe right past threshold → edit, snap back
+          Animated.spring(translateX, {
+            toValue: 0,
+            useNativeDriver: true,
+            speed: 30,
+            bounciness: 4,
+          }).start();
+          onEdit();
+        } else {
+          // Not far enough — snap back
+          Animated.spring(translateX, {
+            toValue: 0,
+            useNativeDriver: true,
+            speed: 30,
+            bounciness: 4,
+          }).start();
+        }
+      },
+      onPanResponderTerminate: () => {
+        Animated.spring(translateX, {
+          toValue: 0,
+          useNativeDriver: true,
+          speed: 30,
+          bounciness: 4,
+        }).start();
+      },
+    }),
+  ).current;
+
+  // Right side (delete) background — fades from transparent to red at SWIPE_THRESHOLD
+  const deleteBg = translateX.interpolate({
+    inputRange: [-120, -SWIPE_THRESHOLD, 0],
+    outputRange: [colors.destructive, colors.destructive, 'transparent'],
+    extrapolate: 'clamp',
+  });
+
+  // Left side (edit) background — fades from transparent to blue at SWIPE_THRESHOLD
+  const editBg = translateX.interpolate({
+    inputRange: [0, SWIPE_THRESHOLD, 120],
+    outputRange: ['transparent', colors.primary, colors.primary],
+    extrapolate: 'clamp',
+  });
+
+  // Icon opacity — appears when swiping the correct direction
+  const deleteIconOpacity = translateX.interpolate({
+    inputRange: [-120, -10, 0],
+    outputRange: [1, 0.6, 0],
+    extrapolate: 'clamp',
+  });
+  const editIconOpacity = translateX.interpolate({
+    inputRange: [0, 10, 120],
+    outputRange: [0, 0.6, 1],
+    extrapolate: 'clamp',
+  });
+
+  return (
+    <View style={swipeCardStyles.row}>
+      {/* Delete action (right side) */}
+      <Animated.View
+        pointerEvents="none"
+        style={[swipeCardStyles.actionRight, { backgroundColor: deleteBg }]}>
+        <Animated.View style={{ opacity: deleteIconOpacity }}>
+          <IconSymbol name="trash" size={22} color="#fff" />
+        </Animated.View>
+      </Animated.View>
+
+      {/* Edit action (left side) */}
+      <Animated.View
+        pointerEvents="none"
+        style={[swipeCardStyles.actionLeft, { backgroundColor: editBg }]}>
+        <Animated.View style={{ opacity: editIconOpacity }}>
+          <IconSymbol name="pencil" size={22} color="#fff" />
+        </Animated.View>
+      </Animated.View>
+
+      {/* The card itself */}
+      <Animated.View
+        style={[swipeCardStyles.card, { transform: [{ translateX }] }]}
+        {...panResponder.panHandlers}>
+        {children}
+      </Animated.View>
+    </View>
+  );
+}
+
+const swipeCardStyles = StyleSheet.create({
+  row: {
+    position: 'relative',
+    overflow: 'hidden',
+    borderRadius: 12,
+    marginBottom: 0,
+  },
+  card: {
+    width: '100%',
+  },
+  actionRight: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+    paddingRight: 20,
+    borderRadius: 12,
+  },
+  actionLeft: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    paddingLeft: 20,
+    borderRadius: 12,
+  },
+});
 
 export default function TripDetailsScreen() {
   const { id } = useLocalSearchParams<{
@@ -43,6 +214,8 @@ export default function TripDetailsScreen() {
   const router = useRouter();
   const theme = useColorScheme() ?? 'light';
   const colors = Colors[theme];
+  const { uid } = useAuth();
+  const { sharedTrips, migrateToShared, inviteToTrip } = useSharedTrips();
   const {
     trips,
     flightsByTripId,
@@ -98,14 +271,31 @@ export default function TripDetailsScreen() {
       if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end >= start) {
         const msPerDay = 86400000;
         const totalDays = Math.round((end.getTime() - start.getTime()) / msPerDay) + 1;
+
+        // Create days and track date → day mapping for flight injection
+        const dateToDay: Record<string, ReturnType<typeof addItineraryDay>> = {};
         for (let i = 0; i < totalDays; i++) {
           const dayDate = new Date(start.getTime() + i * msPerDay);
           const iso = dayDate.toISOString().slice(0, 10);
-          addItineraryDay(tripId, `Day ${i + 1}`, iso);
+          const day = addItineraryDay(tripId, `Day ${i + 1}`, iso);
+          dateToDay[iso] = day;
+        }
+
+        // Auto-add a flight event to the matching departure day
+        for (const flight of flights) {
+          if (!flight.departureDate) continue;
+          const day = dateToDay[flight.departureDate];
+          if (!day) continue;
+          const from = flight.from ?? flight.fromCity ?? '';
+          const to = flight.to ?? flight.toCity ?? '';
+          const num = flight.flightNumber ?? '';
+          const airline = flight.airline ?? '';
+          const label = [airline, num, from && to ? `${from} → ${to}` : ''].filter(Boolean).join(' · ');
+          addItineraryEvent(tripId, day.id, label || 'Flight', flight.departureTime ?? '00:00');
         }
       }
     }
-  }, [activeTab, tripId, trip?.startDate, trip?.endDate, itineraryDays.length, addItineraryDay]);
+  }, [activeTab, tripId, trip?.startDate, trip?.endDate, itineraryDays.length, addItineraryDay, addItineraryEvent, flights]);
 
   const [showItineraryTips, setShowItineraryTips] = useState(false);
   const [itineraryTipIndex, setItineraryTipIndex] = useState(0);
@@ -114,8 +304,23 @@ export default function TripDetailsScreen() {
   const pencilButtonRef = useRef<View>(null);
   const [tipAnchor, setTipAnchor] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
 
+  // Tip bubble animations
+  const tipBubbleScale = useRef(new Animated.Value(0.88)).current;
+  const tipBubbleOpacity = useRef(new Animated.Value(0)).current;
+  const tipContentOpacity = useRef(new Animated.Value(1)).current;
+  const tipBackdropOpacity = useRef(new Animated.Value(0)).current;
+  // Help button pulse ring
+  const helpPulseScale = useRef(new Animated.Value(1)).current;
+  const helpPulseOpacity = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
     if (!showItineraryTips) {
+      // Dismiss animation
+      Animated.parallel([
+        Animated.timing(tipBubbleOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
+        Animated.timing(tipBackdropOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
+        Animated.spring(tipBubbleScale, { toValue: 0.88, useNativeDriver: true, speed: 40, bounciness: 0 }),
+      ]).start();
       setTipAnchor(null);
       return;
     }
@@ -129,12 +334,62 @@ export default function TripDetailsScreen() {
       setTimeout(() => {
         ref.current?.measureInWindow((x, y, w, h) => {
           setTipAnchor({ x, y, w, h });
+          // Entrance animation
+          tipBubbleScale.setValue(0.88);
+          tipBubbleOpacity.setValue(0);
+          Animated.parallel([
+            Animated.spring(tipBubbleScale, { toValue: 1, useNativeDriver: true, speed: 28, bounciness: 6 }),
+            Animated.timing(tipBubbleOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
+            Animated.timing(tipBackdropOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
+          ]).start();
         });
       }, 50);
     } else {
       setTipAnchor(null);
     }
-  }, [showItineraryTips, itineraryTipIndex]);
+  }, [showItineraryTips]);
+
+  // Crossfade tip content when index changes (but only after first show)
+  useEffect(() => {
+    if (!showItineraryTips) return;
+    tipContentOpacity.setValue(0);
+    const tip = ITINERARY_TIPS[itineraryTipIndex];
+    const ref =
+      tip?.target === 'pencil' ? pencilButtonRef
+      : tip?.target === 'help' ? helpButtonRef
+      : tip?.target === 'dayCards' ? dayCardsRef
+      : null;
+    if (ref?.current) {
+      setTimeout(() => {
+        ref.current?.measureInWindow((x, y, w, h) => {
+          setTipAnchor({ x, y, w, h });
+          Animated.timing(tipContentOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+        });
+      }, 50);
+    }
+    Animated.timing(tipContentOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+  }, [itineraryTipIndex]);
+
+  // Help button pulse loop — runs while itinerary tab is active and tips haven't been seen
+  useEffect(() => {
+    if (activeTab !== 'itinerary' || itineraryTipsShownRef.current) return;
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.parallel([
+          Animated.timing(helpPulseScale, { toValue: 2.2, duration: 900, useNativeDriver: true }),
+          Animated.timing(helpPulseOpacity, { toValue: 0, duration: 900, useNativeDriver: true }),
+        ]),
+        Animated.parallel([
+          Animated.timing(helpPulseScale, { toValue: 1, duration: 0, useNativeDriver: true }),
+          Animated.timing(helpPulseOpacity, { toValue: 0.45, duration: 0, useNativeDriver: true }),
+        ]),
+      ]),
+    );
+    helpPulseOpacity.setValue(0.45);
+    helpPulseScale.setValue(1);
+    pulse.start();
+    return () => pulse.stop();
+  }, [activeTab]);
 
   const dayCardsRef = useRef<View>(null);
 
@@ -161,18 +416,101 @@ export default function TripDetailsScreen() {
   const [dayModalVisible, setDayModalVisible] = useState(false);
   const [dayName, setDayName] = useState('');
   const [editingDayId, setEditingDayId] = useState<string | null>(null);
+  const [dayDatePickerVisible, setDayDatePickerVisible] = useState(false);
+  const [dayDateDraft, setDayDateDraft] = useState(new Date());
 
   const [eventModalVisible, setEventModalVisible] = useState(false);
   const [eventName, setEventName] = useState('');
   const [eventTime, setEventTime] = useState('');
   const [eventTimeDate, setEventTimeDate] = useState(new Date());
   const [eventLocation, setEventLocation] = useState('');
+  const [eventNotes, setEventNotes] = useState('');
   const [eventError, setEventError] = useState<string | null>(null);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [eventTickets, setEventTickets] = useState<TicketAttachment[]>([]);
+  const [ticketUploading, setTicketUploading] = useState(false);
+
+  // Upload a file (PDF or image) to Supabase Storage and return a TicketAttachment
+  const uploadTicket = async (uri: string, fileName: string, mimeType: string): Promise<TicketAttachment> => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error('Not authenticated');
+
+    const ext = fileName.split('.').pop() ?? 'bin';
+    const safeTripId = (tripId ?? 'unknown').replace(/[^a-zA-Z0-9\-_]/g, '_');
+    const storagePath = `${session.user.id}/${safeTripId}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`;
+
+    const fileResponse = await fetch(uri);
+    const arrayBuffer = await fileResponse.arrayBuffer();
+
+    const { error } = await supabase.storage.from('Tickets').upload(storagePath, arrayBuffer, { contentType: mimeType });
+    if (error) throw error;
+
+    const { data: { publicUrl } } = supabase.storage.from('Tickets').getPublicUrl(storagePath);
+    return {
+      id: `ticket-${Date.now()}`,
+      name: fileName,
+      url: publicUrl,
+      type: mimeType === 'application/pdf' ? 'pdf' : 'image',
+    };
+  };
+
+  const handleAttachTicket = () => {
+    Alert.alert('Attach Ticket', 'Choose a source', [
+      {
+        text: 'Photo Library',
+        onPress: async () => {
+          const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          if (status !== 'granted') {
+            Alert.alert('Permission Required', 'Please allow photo library access in Settings.');
+            return;
+          }
+          const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            quality: 0.85,
+            allowsMultipleSelection: false,
+          });
+          if (result.canceled || !result.assets[0]) return;
+          const asset = result.assets[0];
+          const fileName = asset.fileName ?? `photo-${Date.now()}.jpg`;
+          const mimeType = asset.mimeType ?? 'image/jpeg';
+          setTicketUploading(true);
+          try {
+            const ticket = await uploadTicket(asset.uri, fileName, mimeType);
+            setEventTickets((prev) => [...prev, ticket]);
+          } catch (e: any) {
+            Alert.alert('Upload Failed', e.message || 'Could not upload image.');
+          } finally {
+            setTicketUploading(false);
+          }
+        },
+      },
+      {
+        text: 'Document / PDF',
+        onPress: async () => {
+          const result = await DocumentPicker.getDocumentAsync({
+            type: ['application/pdf', 'image/*'],
+            copyToCacheDirectory: true,
+          });
+          if (result.canceled || !result.assets[0]) return;
+          const asset = result.assets[0];
+          const mimeType = asset.mimeType ?? 'application/pdf';
+          setTicketUploading(true);
+          try {
+            const ticket = await uploadTicket(asset.uri, asset.name, mimeType);
+            setEventTickets((prev) => [...prev, ticket]);
+          } catch (e: any) {
+            Alert.alert('Upload Failed', e.message || 'Could not upload file.');
+          } finally {
+            setTicketUploading(false);
+          }
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
 
   const [flightModalVisible, setFlightModalVisible] = useState(false);
   const [editingFlightId, setEditingFlightId] = useState<string | null>(null);
-  const [flightSegment, setFlightSegment] = useState<'auto' | 'going' | 'mid' | 'return'>('auto');
   const [flightDepartureDate, setFlightDepartureDate] = useState('');
   const [flightDepartureTime, setFlightDepartureTime] = useState('');
   const [flightArrivalDate, setFlightArrivalDate] = useState('');
@@ -188,10 +526,21 @@ export default function TripDetailsScreen() {
   const [flightLookupFlightNumber, setFlightLookupFlightNumber] = useState('');
   const [flightLookupDate, setFlightLookupDate] = useState('');
   const [flightLookupLoading, setFlightLookupLoading] = useState(false);
-  const [flightManualMode, setFlightManualMode] = useState(false);
+  const [flightLookupStep, setFlightLookupStep] = useState<'lookup' | 'confirm'>('lookup');
+  const [flightConfirmEditMode, setFlightConfirmEditMode] = useState(false);
   const [flightLookupDatePickerVisible, setFlightLookupDatePickerVisible] = useState(false);
   const [flightLookupDraftDate, setFlightLookupDraftDate] = useState<Date>(new Date());
   const [flightError, setFlightError] = useState<string | null>(null);
+  const [flightDepDatePickerVisible, setFlightDepDatePickerVisible] = useState(false);
+  const [flightDepDateDraft, setFlightDepDateDraft] = useState<Date>(new Date());
+  const [flightDepTimePickerVisible, setFlightDepTimePickerVisible] = useState(false);
+  const [flightDepTimeDraft, setFlightDepTimeDraft] = useState<Date>(new Date());
+  const [flightArrDatePickerVisible, setFlightArrDatePickerVisible] = useState(false);
+  const [flightArrDateDraft, setFlightArrDateDraft] = useState<Date>(new Date());
+  const [flightArrTimePickerVisible, setFlightArrTimePickerVisible] = useState(false);
+  const [flightArrTimeDraft, setFlightArrTimeDraft] = useState<Date>(new Date());
+  const [flightDurationHours, setFlightDurationHours] = useState('');
+  const [flightDurationMinutes, setFlightDurationMinutes] = useState('');
 
   const [expenseModalVisible, setExpenseModalVisible] = useState(false);
   const [expenseAmount, setExpenseAmount] = useState('');
@@ -205,6 +554,7 @@ export default function TripDetailsScreen() {
   const [journalDate, setJournalDate] = useState('');
   const [journalText, setJournalText] = useState('');
   const [journalError, setJournalError] = useState<string | null>(null);
+  const [journalIsShared, setJournalIsShared] = useState(false);
 
   const PEXELS_API_KEY = process.env.EXPO_PUBLIC_PEXELS_API_KEY;
   const heroCacheTtlMs = 1000 * 60 * 60 * 24 * 7;
@@ -248,7 +598,7 @@ export default function TripDetailsScreen() {
   });
   const cardAreaHeight = scrollY.interpolate({
     inputRange: [heroMaxHeight * 0.2, heroMaxHeight * 0.65],
-    outputRange: [0, insets.top + 150],
+    outputRange: [0, insets.top + 62],
     extrapolate: 'clamp',
   });
   const [showStickyCard, setShowStickyCard] = useState(false);
@@ -280,7 +630,19 @@ export default function TripDetailsScreen() {
   const [overviewHousingCollapsed, setOverviewHousingCollapsed] = useState(false);
   const [overviewComingUpCollapsed, setOverviewComingUpCollapsed] = useState(false);
 
-  const [tripPeople] = useState<TripPerson[]>([{ id: 'me', name: 'M' }]);
+  // Check if this trip is shared — if so, use members from shared context
+  const sharedTrip = sharedTrips.find(
+    (st) => st.trip.id === id || st.id === id,
+  );
+  const tripPeople: TripPerson[] = sharedTrip
+    ? sharedTrip.members
+        .filter((m) => m.status === 'accepted')
+        .map((m) => ({
+          id: m.userId,
+          name: m.displayName || m.phone || '?',
+        }))
+    : [{ id: uid ?? 'me', name: 'Me' }];
+
   const tripHousing: TripHousing[] = tripId ? housingByTripId[tripId] ?? [] : [];
 
   const [housingModalVisible, setHousingModalVisible] = useState(false);
@@ -295,8 +657,83 @@ export default function TripDetailsScreen() {
     return { year: now.getFullYear(), month: now.getMonth() };
   });
 
+  const [inviteModalVisible, setInviteModalVisible] = useState(false);
+  const [invitePhone, setInvitePhone] = useState('');
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteLoading, setInviteLoading] = useState(false);
+
   const openInviteModal = () => {
-    Alert.alert('Invite', 'Invites will be added soon.', [{ text: 'OK' }]);
+    setInvitePhone('');
+    setInviteError(null);
+    setInviteLoading(false);
+    setInviteModalVisible(true);
+  };
+
+  const pickContact = async () => {
+    try {
+      const result = await Contacts.presentContactPickerAsync();
+      if (result && result.phoneNumbers && result.phoneNumbers.length > 0) {
+        const raw = result.phoneNumbers[0].number ?? '';
+        // Normalize: strip non-digit except leading +
+        const cleaned = raw.startsWith('+')
+          ? '+' + raw.slice(1).replace(/\D/g, '')
+          : raw.replace(/\D/g, '');
+        setInvitePhone(cleaned);
+      }
+    } catch {
+      Alert.alert('Contacts', 'Could not access contacts. Please check permissions in Settings.');
+    }
+  };
+
+  const handleSendInvite = async () => {
+    if (!tripId || !trip) return;
+    const phone = invitePhone.trim();
+    if (!phone) {
+      setInviteError('Please enter a phone number.');
+      return;
+    }
+    // Basic phone validation
+    if (!/^\+?\d{7,15}$/.test(phone)) {
+      setInviteError('Please enter a valid phone number (e.g. +12025551234).');
+      return;
+    }
+
+    setInviteLoading(true);
+    setInviteError(null);
+
+    try {
+      let sharedId = sharedTrip?.id;
+
+      // If trip isn't shared yet, migrate it first
+      if (!sharedId) {
+        sharedId = await migrateToShared(
+          trip,
+          flights,
+          itineraryDays,
+          expenses,
+          tripHousing,
+          journalEntries,
+        );
+      }
+
+      await inviteToTrip(sharedId, phone);
+      setInviteModalVisible(false);
+
+      // Open native Messages app with pre-filled invite text
+      // TODO: replace dummy text with real App Store link once published
+      const message = encodeURIComponent(
+        'This is a test for sending invites for my app.',
+      );
+      const smsUrl =
+        Platform.OS === 'ios'
+          ? `sms:${phone}&body=${message}`
+          : `sms:${phone}?body=${message}`;
+      Linking.openURL(smsUrl);
+    } catch (err: any) {
+      setInviteError(err.message || 'Something went wrong.');
+    } finally {
+      setInviteLoading(false);
+    }
   };
 
   const openHousingModal = () => {
@@ -785,15 +1222,17 @@ export default function TripDetailsScreen() {
     setExpenseModalVisible(true);
   };
 
-  const openJournalModal = (entry?: { id: string; date: string; text: string }) => {
+  const openJournalModal = (entry?: { id: string; date: string; text: string; isShared?: boolean }) => {
     if (entry) {
       setEditingJournalEntryId(entry.id);
       setJournalDate(entry.date);
       setJournalText(entry.text);
+      setJournalIsShared(entry.isShared ?? false);
     } else {
       setEditingJournalEntryId(null);
       setJournalDate(getTodayIsoDate());
       setJournalText('');
+      setJournalIsShared(false);
     }
     setJournalError(null);
     setJournalModalVisible(true);
@@ -814,7 +1253,6 @@ export default function TripDetailsScreen() {
     toCity?: string;
   }) => {
     setEditingFlightId(existing?.id ?? null);
-    setFlightSegment(existing?.segment ?? 'auto');
     setFlightDepartureDate(existing?.departureDate ?? '');
     setFlightDepartureTime(existing?.departureTime ?? '');
     setFlightArrivalDate(existing?.arrivalDate ?? '');
@@ -831,15 +1269,18 @@ export default function TripDetailsScreen() {
     setFlightLookupFlightNumber(existing?.flightNumber ? existing.flightNumber.replace(/[^0-9]/g, '') : '');
     setFlightLookupDate(existing?.departureDate ?? '');
     setFlightLookupLoading(false);
-    setFlightManualMode(false);
+    setFlightLookupStep(existing ? 'confirm' : 'lookup');
+    setFlightConfirmEditMode(false);
     const initialLookupDate = parseTripDate(existing?.departureDate);
     setFlightLookupDraftDate(initialLookupDate ?? new Date());
     setFlightLookupDatePickerVisible(false);
     setFlightError(null);
+    setFlightDurationHours('');
+    setFlightDurationMinutes('');
     setFlightModalVisible(true);
   };
 
-  const AVIATIONSTACK_KEY = process.env.EXPO_PUBLIC_AVIATIONSTACK_KEY;
+  const RAPIDAPI_KEY = process.env.EXPO_PUBLIC_RAPIDAPI_KEY;
 
   const formatDateLabel = (isoDate?: string) => {
     if (!isoDate) return '';
@@ -857,6 +1298,137 @@ export default function TripDetailsScreen() {
 
   // AviationStack uses YYYY-MM-DD format natively — no transformation needed.
 
+  const airportCityMap: Record<string, string> = {
+    JFK: 'New York', LGA: 'New York', EWR: 'Newark', LAX: 'Los Angeles', ORD: 'Chicago',
+    ATL: 'Atlanta', DFW: 'Dallas', DEN: 'Denver', SFO: 'San Francisco', SEA: 'Seattle',
+    MIA: 'Miami', BOS: 'Boston', LAS: 'Las Vegas', PHX: 'Phoenix', IAH: 'Houston',
+    MCO: 'Orlando', MSP: 'Minneapolis', DTW: 'Detroit', PHL: 'Philadelphia', CLT: 'Charlotte',
+    LHR: 'London', LGW: 'London', STN: 'London', CDG: 'Paris', ORY: 'Paris',
+    AMS: 'Amsterdam', FRA: 'Frankfurt', MUC: 'Munich', MAD: 'Madrid', BCN: 'Barcelona',
+    FCO: 'Rome', MXP: 'Milan', LIN: 'Milan', LIS: 'Lisbon', OPO: 'Porto',
+    DUB: 'Dublin', MAN: 'Manchester', BHX: 'Birmingham', EDI: 'Edinburgh', GLA: 'Glasgow',
+    BRU: 'Brussels', ZRH: 'Zurich', VIE: 'Vienna', CPH: 'Copenhagen', ARN: 'Stockholm',
+    OSL: 'Oslo', HEL: 'Helsinki', ATH: 'Athens', IST: 'Istanbul', SVO: 'Moscow',
+    DXB: 'Dubai', AUH: 'Abu Dhabi', DOH: 'Doha', KWI: 'Kuwait City', BAH: 'Bahrain',
+    BOM: 'Mumbai', DEL: 'Delhi', BLR: 'Bangalore', MAA: 'Chennai', HYD: 'Hyderabad',
+    SIN: 'Singapore', KUL: 'Kuala Lumpur', BKK: 'Bangkok', CGK: 'Jakarta', MNL: 'Manila',
+    HKG: 'Hong Kong', PVG: 'Shanghai', PEK: 'Beijing', ICN: 'Seoul', NRT: 'Tokyo',
+    HND: 'Tokyo', KIX: 'Osaka', SYD: 'Sydney', MEL: 'Melbourne', BNE: 'Brisbane',
+    AKL: 'Auckland', YYZ: 'Toronto', YVR: 'Vancouver', YUL: 'Montreal', YYC: 'Calgary',
+    MEX: 'Mexico City', GRU: 'São Paulo', GIG: 'Rio de Janeiro', EZE: 'Buenos Aires',
+    BOG: 'Bogotá', SCL: 'Santiago', LIM: 'Lima', JNB: 'Johannesburg', CPT: 'Cape Town',
+    NBO: 'Nairobi', CAI: 'Cairo', CMN: 'Casablanca', ADD: 'Addis Ababa', LOS: 'Lagos',
+  };
+
+  // IANA timezone for each airport — used to compute correct local arrival time
+  const airportTzMap: Record<string, string> = {
+    JFK: 'America/New_York', LGA: 'America/New_York', EWR: 'America/New_York',
+    LAX: 'America/Los_Angeles', ORD: 'America/Chicago', ATL: 'America/New_York',
+    DFW: 'America/Chicago', DEN: 'America/Denver', SFO: 'America/Los_Angeles',
+    SEA: 'America/Los_Angeles', MIA: 'America/New_York', BOS: 'America/New_York',
+    LAS: 'America/Los_Angeles', PHX: 'America/Phoenix', IAH: 'America/Chicago',
+    MCO: 'America/New_York', MSP: 'America/Chicago', DTW: 'America/Detroit',
+    PHL: 'America/New_York', CLT: 'America/New_York',
+    LHR: 'Europe/London', LGW: 'Europe/London', STN: 'Europe/London',
+    CDG: 'Europe/Paris', ORY: 'Europe/Paris', AMS: 'Europe/Amsterdam',
+    FRA: 'Europe/Berlin', MUC: 'Europe/Berlin', MAD: 'Europe/Madrid',
+    BCN: 'Europe/Madrid', FCO: 'Europe/Rome', MXP: 'Europe/Rome', LIN: 'Europe/Rome',
+    LIS: 'Europe/Lisbon', OPO: 'Europe/Lisbon', DUB: 'Europe/Dublin',
+    MAN: 'Europe/London', BHX: 'Europe/London', EDI: 'Europe/London', GLA: 'Europe/London',
+    BRU: 'Europe/Brussels', ZRH: 'Europe/Zurich', VIE: 'Europe/Vienna',
+    CPH: 'Europe/Copenhagen', ARN: 'Europe/Stockholm', OSL: 'Europe/Oslo',
+    HEL: 'Europe/Helsinki', ATH: 'Europe/Athens', IST: 'Europe/Istanbul',
+    SVO: 'Europe/Moscow', LED: 'Europe/Moscow',
+    DXB: 'Asia/Dubai', AUH: 'Asia/Dubai', DOH: 'Asia/Qatar',
+    KWI: 'Asia/Kuwait', BAH: 'Asia/Bahrain', RUH: 'Asia/Riyadh',
+    BOM: 'Asia/Kolkata', DEL: 'Asia/Kolkata', BLR: 'Asia/Kolkata',
+    MAA: 'Asia/Kolkata', HYD: 'Asia/Kolkata', CCU: 'Asia/Kolkata',
+    SIN: 'Asia/Singapore', KUL: 'Asia/Kuala_Lumpur', BKK: 'Asia/Bangkok',
+    CGK: 'Asia/Jakarta', MNL: 'Asia/Manila', HKG: 'Asia/Hong_Kong',
+    PVG: 'Asia/Shanghai', PEK: 'Asia/Shanghai', ICN: 'Asia/Seoul',
+    NRT: 'Asia/Tokyo', HND: 'Asia/Tokyo', KIX: 'Asia/Tokyo',
+    SYD: 'Australia/Sydney', MEL: 'Australia/Melbourne', BNE: 'Australia/Brisbane',
+    PER: 'Australia/Perth', ADL: 'Australia/Adelaide',
+    AKL: 'Pacific/Auckland', CHC: 'Pacific/Auckland',
+    YYZ: 'America/Toronto', YVR: 'America/Vancouver', YUL: 'America/Toronto',
+    YYC: 'America/Edmonton', YEG: 'America/Edmonton',
+    MEX: 'America/Mexico_City', GRU: 'America/Sao_Paulo', GIG: 'America/Sao_Paulo',
+    EZE: 'America/Argentina/Buenos_Aires', BOG: 'America/Bogota',
+    SCL: 'America/Santiago', LIM: 'America/Lima',
+    JNB: 'Africa/Johannesburg', CPT: 'Africa/Johannesburg',
+    NBO: 'Africa/Nairobi', CAI: 'Africa/Cairo', CMN: 'Africa/Casablanca',
+    ADD: 'Africa/Addis_Ababa', LOS: 'Africa/Lagos',
+  };
+
+  const formatLongDate = (iso: string): string => {
+    const d = parseTripDate(iso);
+    if (!d) return iso;
+    return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  };
+
+  const hhmmFromDate = (d: Date): string =>
+    `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+  // Convert a naive local datetime (YYYY-MM-DD + HH:MM) in a given IANA timezone to a UTC Date.
+  const zonedToUTC = (dateStr: string, timeStr: string, iana: string): Date => {
+    const naive = new Date(`${dateStr}T${timeStr}:00Z`);
+    const localAtNaive = new Date(
+      new Intl.DateTimeFormat('sv-SE', {
+        timeZone: iana,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+      }).format(naive).replace(' ', 'T') + 'Z'
+    );
+    return new Date(naive.getTime() + (naive.getTime() - localAtNaive.getTime()));
+  };
+
+  // Convert a UTC Date to local date/time strings in the given IANA timezone.
+  const utcToZoned = (utc: Date, iana: string): { date: string; time: string } => {
+    const parts = new Intl.DateTimeFormat('sv-SE', {
+      timeZone: iana,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    }).format(utc).split(' ');
+    return { date: parts[0], time: parts[1] };
+  };
+
+  const computeArrival = (depDate: string, depTime: string, dH: string, dM: string, fromCode?: string, toCode?: string) => {
+    if (!depDate || !depTime) return;
+    const [h, m] = depTime.split(':').map(Number);
+    if (isNaN(h) || isNaN(m)) return;
+    const totalMins = (parseInt(dH || '0') * 60) + parseInt(dM || '0');
+    if (totalMins <= 0) return;
+    const hhmm = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+
+    const depTz = airportTzMap[(fromCode ?? flightFrom).toUpperCase()];
+    const arrTz = airportTzMap[(toCode ?? flightTo).toUpperCase()];
+
+    let arrUTC: Date;
+    if (depTz) {
+      arrUTC = new Date(zonedToUTC(depDate, hhmm, depTz).getTime() + totalMins * 60_000);
+    } else {
+      const d = parseTripDate(depDate)!;
+      d.setHours(h, m, 0, 0);
+      arrUTC = new Date(d.getTime() + totalMins * 60_000);
+    }
+
+    if (arrTz) {
+      const { date, time } = utcToZoned(arrUTC, arrTz);
+      setFlightArrivalDate(date);
+      setFlightArrivalTime(time);
+    } else {
+      setFlightArrivalDate(toLocalIsoDate(arrUTC));
+      setFlightArrivalTime(hhmmFromDate(arrUTC));
+    }
+  };
+
+  const dateFromHhmm = (hhmm: string): Date => {
+    const [h, m] = hhmm.split(':').map(Number);
+    const d = new Date();
+    d.setHours(isNaN(h) ? 0 : h, isNaN(m) ? 0 : m, 0, 0);
+    return d;
+  };
+
   const airlineOptions = [
     { name: 'American Airlines', iata: 'AA' },
     { name: 'Delta Air Lines', iata: 'DL' },
@@ -866,6 +1438,7 @@ export default function TripDetailsScreen() {
     { name: 'Alaska Airlines', iata: 'AS' },
     { name: 'Air Canada', iata: 'AC' },
     { name: 'British Airways', iata: 'BA' },
+    { name: 'Virgin Atlantic', iata: 'VS' },
     { name: 'Lufthansa', iata: 'LH' },
     { name: 'Air France', iata: 'AF' },
     { name: 'KLM', iata: 'KL' },
@@ -878,21 +1451,31 @@ export default function TripDetailsScreen() {
     { name: 'Japan Airlines', iata: 'JL' },
     { name: 'Ryanair', iata: 'FR' },
     { name: 'easyJet', iata: 'U2' },
+    { name: 'Wizz Air', iata: 'W6' },
+    { name: 'Norwegian', iata: 'DY' },
     { name: 'Vueling', iata: 'VY' },
     { name: 'Iberia', iata: 'IB' },
+    { name: 'Finnair', iata: 'AY' },
+    { name: 'Swiss', iata: 'LX' },
+    { name: 'Austrian Airlines', iata: 'OS' },
     { name: 'TAP Air Portugal', iata: 'TP' },
     { name: 'Aer Lingus', iata: 'EI' },
+    { name: 'Eurowings', iata: 'EW' },
     { name: 'Spirit Airlines', iata: 'NK' },
     { name: 'Frontier Airlines', iata: 'F9' },
+    { name: 'Air New Zealand', iata: 'NZ' },
+    { name: 'Qantas', iata: 'QF' },
     { name: 'Avianca', iata: 'AV' },
     { name: 'LATAM', iata: 'LA' },
-    { name: 'VivaAerobus', iata: 'VB' },
     { name: 'IndiGo', iata: '6E' },
+    { name: 'Air India', iata: 'AI' },
+    { name: 'Ethiopian Airlines', iata: 'ET' },
+    { name: 'Kenya Airways', iata: 'KQ' },
   ];
 
   const lookupFlightDetails = async () => {
-    if (!AVIATIONSTACK_KEY) {
-      setFlightError('Missing flight API key. Set EXPO_PUBLIC_AVIATIONSTACK_KEY and try again.');
+    if (!RAPIDAPI_KEY) {
+      setFlightError('Missing RapidAPI key. Set EXPO_PUBLIC_RAPIDAPI_KEY and try again.');
       return;
     }
 
@@ -902,7 +1485,7 @@ export default function TripDetailsScreen() {
     const flightNumOnly = flightLookupFlightNumber.replace(/[^0-9]/g, '');
 
     if (!airlineIata || !flightNumOnly || !date) {
-      setFlightError('Please enter an airline, flight number, and flight day (YYYY-MM-DD).');
+      setFlightError('Please enter an airline, flight number, and date.');
       return;
     }
 
@@ -911,20 +1494,24 @@ export default function TripDetailsScreen() {
 
     try {
       const flightIata = `${airlineIata}${flightNumOnly}`;
-      // AviationStack free tier is HTTP only — HTTPS requires a paid plan.
-      const url = `http://api.aviationstack.com/v1/flights?access_key=${encodeURIComponent(AVIATIONSTACK_KEY)}&flight_iata=${encodeURIComponent(flightIata)}&flight_date=${encodeURIComponent(date)}`;
+      const url = `https://aerodatabox.p.rapidapi.com/flights/number/${encodeURIComponent(flightIata)}/${encodeURIComponent(date)}`;
 
-      const res = await fetch(url);
+      const res = await fetch(url, {
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': 'aerodatabox.p.rapidapi.com',
+        },
+      });
       const json = (await res.json()) as any;
 
       if (!res.ok) {
-        const message = typeof json?.error?.message === 'string' ? json.error.message : undefined;
+        const message = typeof json?.message === 'string' ? json.message : undefined;
         setFlightError(`Flight lookup error: ${message ?? 'Request failed.'}`);
         return;
       }
 
-      const flights = json?.data;
-      if (!Array.isArray(flights) || flights.length === 0) {
+      const flights = Array.isArray(json) ? json : [];
+      if (flights.length === 0) {
         setFlightError('No matching flight found. Double-check the airline, flight number, and date.');
         return;
       }
@@ -934,36 +1521,36 @@ export default function TripDetailsScreen() {
       const arrival = flight?.arrival;
       const airlineName: string | undefined = flight?.airline?.name;
 
-      const depScheduled: string | undefined = departure?.scheduled ?? departure?.estimated ?? departure?.actual;
-      const arrScheduled: string | undefined = arrival?.scheduled ?? arrival?.estimated ?? arrival?.actual;
+      // AeroDataBox returns local time in “YYYY-MM-DD HH:mm+offset” format
+      const parseAeroTime = (raw: string | undefined): { date: string; time: string } | undefined => {
+        if (!raw) return undefined;
+        const m = raw.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})/);
+        if (!m) return undefined;
+        return { date: m[1], time: m[2] };
+      };
 
-      const datePart = typeof depScheduled === 'string' ? depScheduled.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] : undefined;
-      const timePart = typeof depScheduled === 'string' ? depScheduled.match(/T(\d{2}:\d{2})/)?.[1] : undefined;
-      const arrDatePart = typeof arrScheduled === 'string' ? arrScheduled.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] : undefined;
-      const arrTimePart = typeof arrScheduled === 'string' ? arrScheduled.match(/T(\d{2}:\d{2})/)?.[1] : undefined;
+      const depLocal = departure?.scheduledTime?.local ?? departure?.revisedTime?.local;
+      const arrLocal = arrival?.scheduledTime?.local ?? arrival?.revisedTime?.local;
+      const dep = parseAeroTime(depLocal);
+      const arr = parseAeroTime(arrLocal);
 
-      if (datePart) setFlightDepartureDate(datePart);
-      if (timePart) setFlightDepartureTime(timePart);
-      if (arrDatePart) setFlightArrivalDate(arrDatePart);
-      if (arrTimePart) setFlightArrivalTime(arrTimePart);
+      if (dep) { setFlightDepartureDate(dep.date); setFlightDepartureTime(dep.time); }
+      if (arr) { setFlightArrivalDate(arr.date); setFlightArrivalTime(arr.time); }
 
-      // AviationStack returns the full airline name — use it if available.
       setFlightAirline(airlineName ?? (flightLookupAirlineQuery.trim() ? flightLookupAirlineQuery.trim() : airlineIata));
       setFlightNumber(flightIata);
 
-      const fromCode = departure?.iata;
-      const toCode = arrival?.iata;
-      if (typeof fromCode === 'string' && fromCode.trim()) setFlightFrom(fromCode.trim());
-      if (typeof toCode === 'string' && toCode.trim()) setFlightTo(toCode.trim());
+      const fromCode: string | undefined = departure?.airport?.iata;
+      const toCode: string | undefined = arrival?.airport?.iata;
+      if (fromCode?.trim()) setFlightFrom(fromCode.trim());
+      if (toCode?.trim()) setFlightTo(toCode.trim());
 
-      const fromCity = departure?.city ?? departure?.airport;
-      const toCity = arrival?.city ?? arrival?.airport;
-      if (typeof fromCity === 'string' && fromCity.trim()) setFlightFromCity(fromCity.trim());
-      if (typeof toCity === 'string' && toCity.trim()) setFlightToCity(toCity.trim());
+      const fromCity: string | undefined = departure?.airport?.municipalityName ?? departure?.airport?.name;
+      const toCity: string | undefined = arrival?.airport?.municipalityName ?? arrival?.airport?.name;
+      if (fromCity?.trim()) setFlightFromCity(fromCity.trim());
+      if (toCity?.trim()) setFlightToCity(toCity.trim());
 
-      if (!datePart || !timePart || !fromCode || !toCode) {
-        setFlightError('Found the flight, but some details were missing. Use “Edit details” to confirm/fill in.');
-      }
+      setFlightLookupStep('confirm');
     } catch (_e) {
       setFlightError('Flight lookup failed. Please try again.');
     } finally {
@@ -1185,7 +1772,29 @@ export default function TripDetailsScreen() {
                     <View
                       key={h.id}
                       style={[styles.housingItem, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
-                      <ThemedText style={styles.housingItemTitle}>{h.location}</ThemedText>
+                      <Pressable
+                        onPress={() => {
+                          const query = encodeURIComponent(h.location);
+                          Alert.alert(
+                            h.location,
+                            'Open in maps',
+                            [
+                              {
+                                text: 'Google Maps',
+                                onPress: () => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${query}`),
+                              },
+                              {
+                                text: 'Apple Maps',
+                                onPress: () => Linking.openURL(`maps://?q=${query}`),
+                              },
+                              { text: 'Cancel', style: 'cancel' },
+                            ],
+                          );
+                        }}
+                        style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+                      >
+                        <ThemedText style={styles.housingItemTitle}>{h.location}</ThemedText>
+                      </Pressable>
                       <ThemedText style={styles.housingItemSubtitle}>
                         {formatHousingDate(h.startDate)} – {formatHousingDate(h.endDate)}
                       </ThemedText>
@@ -1451,343 +2060,355 @@ export default function TripDetailsScreen() {
               )}
             </ThemedView>
 
-            <Modal visible={flightModalVisible} transparent animationType="fade">
-              <View style={styles.modalOverlay}>
-                <View style={[styles.modalCard, styles.flightModalCard, { backgroundColor: colors.surface }]}
-                >
-                  <ScrollView
-                    style={styles.modalScroll}
-                    contentContainerStyle={styles.modalScrollContent}
-                    keyboardShouldPersistTaps="handled">
-                    <ThemedText style={styles.modalTitle}>{editingFlightId ? 'Edit Flight' : 'Add Flight'}</ThemedText>
+            <Modal visible={flightModalVisible} transparent animationType="slide">
+              <View style={styles.flightSheetOverlay}>
+                <View style={[styles.flightBottomSheet, { backgroundColor: colors.surface }]}>
+                  <View style={styles.sheetHandle} />
+                  <ThemedText style={styles.modalTitle}>{editingFlightId ? 'Edit Flight' : 'Add Flight'}</ThemedText>
 
-                    <ThemedText style={styles.modalSubtitle}>Flight type</ThemedText>
-                    <View style={styles.flightSegmentRow}>
-                      {([
-                        { key: 'auto' as const, label: 'Auto' },
-                        { key: 'going' as const, label: 'Going' },
-                        { key: 'mid' as const, label: 'Mid' },
-                        { key: 'return' as const, label: 'Return' },
-                      ] as const).map((opt) => {
-                        const active = flightSegment === opt.key;
-                        return (
-                          <Pressable
-                            key={opt.key}
-                            style={[
-                              styles.flightSegmentOption,
-                              { borderColor: colors.border, backgroundColor: colors.surfaceMuted },
-                              active ? { backgroundColor: colors.primary, borderColor: colors.primary } : null,
-                            ]}
-                            onPress={() => setFlightSegment(opt.key)}>
-                            <ThemedText
-                              style={[
-                                styles.flightSegmentOptionText,
-                                active ? { color: '#fff' } : { color: colors.inputText },
-                              ]}>
-                              {opt.label}
-                            </ThemedText>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
+                    {flightLookupStep === 'lookup' ? (
+                      <View style={{ flex: 1, gap: 14 }}>
 
-                    <ThemedText style={styles.modalSubtitle}>Flight lookup</ThemedText>
-                    <TextInput
-                      value={flightLookupAirlineQuery}
-                      onChangeText={(value) => {
-                        setFlightLookupAirlineQuery(value);
-                        setFlightLookupAirlineIata('');
-                      }}
-                      placeholder="Airline (search or enter IATA code like DL)"
-                      placeholderTextColor="#888"
-                      autoCapitalize="words"
-                      style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                    />
+                        {/* Step 1: Airline — always visible */}
+                        <View style={{ zIndex: 10 }}>
+                          <ThemedText style={styles.flightStepLabel}>Which airline?</ThemedText>
+                          <TextInput
+                            value={flightLookupAirlineQuery}
+                            onChangeText={(value) => {
+                              setFlightLookupAirlineQuery(value);
+                              setFlightLookupAirlineIata('');
+                            }}
+                            placeholder="Search airline or IATA code (e.g. VS)"
+                            placeholderTextColor="#888"
+                            autoCapitalize="words"
+                            style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+                          />
+                          {flightLookupAirlineQuery.trim().length > 0 && !flightLookupAirlineIata ? (
+                            <View style={[styles.airlineResultsFloat, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+                              <ScrollView keyboardShouldPersistTaps="handled">
+                                {airlineOptions
+                                  .filter(
+                                    (a) =>
+                                      a.name.toLowerCase().includes(flightLookupAirlineQuery.trim().toLowerCase()) ||
+                                      a.iata.toLowerCase().includes(flightLookupAirlineQuery.trim().toLowerCase()),
+                                  )
+                                  .slice(0, 8)
+                                  .map((a) => (
+                                    <Pressable
+                                      key={a.iata}
+                                      style={styles.airlineResultItem}
+                                      onPress={() => {
+                                        setFlightLookupAirlineQuery(`${a.name} (${a.iata})`);
+                                        setFlightLookupAirlineIata(a.iata);
+                                      }}>
+                                      <ThemedText style={styles.airlineResultText}>{`${a.name} (${a.iata})`}</ThemedText>
+                                    </Pressable>
+                                  ))}
+                              </ScrollView>
+                            </View>
+                          ) : null}
+                        </View>
 
-                    {flightLookupAirlineQuery.trim().length ? (
-                      <View style={[styles.airlineResults, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
-                        {airlineOptions
-                          .filter(
-                            (a) =>
-                              a.name.toLowerCase().includes(flightLookupAirlineQuery.trim().toLowerCase()) ||
-                              a.iata.toLowerCase().includes(flightLookupAirlineQuery.trim().toLowerCase()),
-                          )
-                          .slice(0, 8)
-                          .map((a) => (
-                            <Pressable
-                              key={a.iata}
-                              style={styles.airlineResultItem}
-                              onPress={() => {
-                                setFlightLookupAirlineQuery(`${a.name} (${a.iata})`);
-                                setFlightLookupAirlineIata(a.iata);
-                              }}>
-                              <ThemedText style={styles.airlineResultText}>{`${a.name} (${a.iata})`}</ThemedText>
-                            </Pressable>
-                          ))}
-                      </View>
-                    ) : null}
+                        {/* Step 2: Flight number — appears after airline selected */}
+                        {flightLookupAirlineIata ? (
+                          <View>
+                            <ThemedText style={styles.flightStepLabel}>Flight number</ThemedText>
+                            <TextInput
+                              value={flightLookupFlightNumber}
+                              onChangeText={setFlightLookupFlightNumber}
+                              placeholder="e.g. 3 or 1234"
+                              placeholderTextColor="#888"
+                              keyboardType="number-pad"
+                              style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+                            />
+                          </View>
+                        ) : null}
 
-                    <TextInput
-                      value={flightLookupFlightNumber}
-                      onChangeText={setFlightLookupFlightNumber}
-                      placeholder="Flight number (e.g., 1234)"
-                      placeholderTextColor="#888"
-                      autoCapitalize="characters"
-                      style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                    />
-
-                    <Pressable
-                      onPress={() => {
-                        const current = parseTripDate(flightLookupDate);
-                        setFlightLookupDraftDate(current ?? new Date());
-                        setFlightLookupDatePickerVisible(true);
-                      }}
-                      style={[styles.dateSelectButton, { borderColor: colors.border }]}>
-                      <ThemedText style={[styles.dateSelectButtonText, { color: colors.inputText }]}>
-                        {flightLookupDate ? formatDateLabel(flightLookupDate) : 'Flight day'}
-                      </ThemedText>
-                    </Pressable>
-
-                    <Modal
-                      visible={flightLookupDatePickerVisible}
-                      transparent
-                      animationType="slide"
-                      onRequestClose={() => setFlightLookupDatePickerVisible(false)}>
-                      <View style={styles.datePickerBackdrop}>
-                        <View style={[styles.datePickerCard, { backgroundColor: colors.surface }]}
-                        >
-                          <View style={styles.datePickerHeader}>
-                            <Pressable
-                              onPress={() => setFlightLookupDatePickerVisible(false)}
-                              style={styles.datePickerHeaderButton}>
-                              <ThemedText style={[styles.datePickerHeaderButtonText, { color: colors.primary }]}
-                              >
-                                Cancel
-                              </ThemedText>
-                            </Pressable>
-
-                            <ThemedText style={styles.datePickerTitle}>Flight day</ThemedText>
-
+                        {/* Step 3: Date — appears after flight number entered */}
+                        {flightLookupAirlineIata && flightLookupFlightNumber.trim() ? (
+                          <View>
+                            <ThemedText style={styles.flightStepLabel}>Flight date</ThemedText>
                             <Pressable
                               onPress={() => {
-                                setFlightLookupDate(toLocalIsoDate(flightLookupDraftDate));
-                                setFlightLookupDatePickerVisible(false);
+                                const current = parseTripDate(flightLookupDate);
+                                setFlightLookupDraftDate(current ?? new Date());
+                                setFlightLookupDatePickerVisible(true);
                               }}
-                              style={styles.datePickerHeaderButton}>
-                              <ThemedText style={[styles.datePickerHeaderButtonText, { color: colors.primary }]}
-                              >
-                                Done
+                              style={[styles.dateSelectButton, { borderColor: colors.border }]}>
+                              <ThemedText style={[styles.dateSelectButtonText, { color: colors.inputText }]}>
+                                {flightLookupDate ? formatDateLabel(flightLookupDate) : 'Select date'}
                               </ThemedText>
+                            </Pressable>
+                            <Modal
+                              visible={flightLookupDatePickerVisible}
+                              transparent
+                              animationType="slide"
+                              onRequestClose={() => setFlightLookupDatePickerVisible(false)}>
+                              <View style={styles.datePickerBackdrop}>
+                                <View style={[styles.datePickerCard, { backgroundColor: colors.surface }]}>
+                                  <View style={styles.datePickerHeader}>
+                                    <Pressable
+                                      onPress={() => setFlightLookupDatePickerVisible(false)}
+                                      style={styles.datePickerHeaderButton}>
+                                      <ThemedText style={[styles.datePickerHeaderButtonText, { color: colors.primary }]}>
+                                        Cancel
+                                      </ThemedText>
+                                    </Pressable>
+                                    <ThemedText style={styles.datePickerTitle}>Flight day</ThemedText>
+                                    <Pressable
+                                      onPress={() => {
+                                        setFlightLookupDate(toLocalIsoDate(flightLookupDraftDate));
+                                        setFlightLookupDatePickerVisible(false);
+                                      }}
+                                      style={styles.datePickerHeaderButton}>
+                                      <ThemedText style={[styles.datePickerHeaderButtonText, { color: colors.primary }]}>
+                                        Done
+                                      </ThemedText>
+                                    </Pressable>
+                                  </View>
+                                  <DateTimePicker
+                                    value={flightLookupDraftDate}
+                                    mode="date"
+                                    display="spinner"
+                                    onChange={(_event: DateTimePickerEvent, date?: Date) => {
+                                      if (date instanceof Date && !Number.isNaN(date.getTime())) {
+                                        setFlightLookupDraftDate(date);
+                                      }
+                                    }}
+                                  />
+                                </View>
+                              </View>
+                            </Modal>
+                          </View>
+                        ) : null}
+
+                        {/* Error + manual entry fallback */}
+                        {flightError ? (
+                          <View style={[styles.flightErrorBox, { borderColor: colors.border }]}>
+                            <ThemedText style={styles.modalErrorText}>{flightError}</ThemedText>
+                            <Pressable
+                              style={[styles.modalButton, styles.modalPrimaryButton, { backgroundColor: colors.primary, borderColor: colors.primary, marginTop: 10, alignSelf: 'stretch' }]}
+                              onPress={() => {
+                                setFlightAirline(flightLookupAirlineQuery.trim());
+                                setFlightNumber(`${flightLookupAirlineIata}${flightLookupFlightNumber.trim()}`);
+                                setFlightDepartureDate(flightLookupDate);
+                                setFlightConfirmEditMode(true);
+                                setFlightError(null);
+                                setFlightLookupStep('confirm');
+                              }}>
+                              <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Enter manually instead</ThemedText>
                             </Pressable>
                           </View>
+                        ) : null}
 
-                          <DateTimePicker
-                            value={flightLookupDraftDate}
-                            mode="date"
-                            display="spinner"
-                            onChange={(_event: DateTimePickerEvent, date?: Date) => {
-                              if (date instanceof Date && !Number.isNaN(date.getTime())) {
-                                setFlightLookupDraftDate(date);
-                              }
-                            }}
-                          />
+                        <View style={{ flex: 1 }} />
+                        <View style={styles.modalActions}>
+                          <Pressable
+                            style={[styles.modalButton, { borderColor: colors.border }]}
+                            onPress={() => {
+                              setFlightModalVisible(false);
+                              setFlightError(null);
+                              setEditingFlightId(null);
+                            }}>
+                            <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
+                          </Pressable>
+                          {flightLookupAirlineIata && flightLookupFlightNumber.trim() && flightLookupDate ? (
+                            <Pressable
+                              style={[
+                                styles.modalButton,
+                                styles.modalPrimaryButton,
+                                { backgroundColor: colors.primary, borderColor: colors.primary },
+                              ]}
+                              onPress={lookupFlightDetails}
+                              disabled={flightLookupLoading}>
+                              <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>
+                                {flightLookupLoading ? 'Looking up…' : 'Lookup'}
+                              </ThemedText>
+                            </Pressable>
+                          ) : null}
                         </View>
                       </View>
-                    </Modal>
-
-                    <View style={styles.flightLookupActions}>
-                      <Pressable
-                        style={[
-                          styles.modalButton,
-                          styles.modalPrimaryButton,
-                          { backgroundColor: colors.primary, borderColor: colors.primary },
-                        ]}
-                        onPress={lookupFlightDetails}
-                        disabled={flightLookupLoading}>
-                        <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>
-                          {flightLookupLoading ? 'Looking up…' : 'Lookup'}
-                        </ThemedText>
-                      </Pressable>
-
-                      <Pressable
-                        style={[styles.modalButton, { borderColor: colors.border }]}
-                        onPress={() => {
-                          setFlightLookupAirlineQuery('');
-                          setFlightLookupAirlineIata('');
-                          setFlightLookupFlightNumber('');
-                          setFlightLookupDate('');
-                          setFlightError(null);
-                        }}>
-                        <ThemedText style={styles.modalButtonText}>Clear</ThemedText>
-                      </Pressable>
-
-                      <Pressable
-                        style={[styles.modalButton, { borderColor: colors.border }]}
-                        onPress={() => {
-                          setFlightManualMode((v) => !v);
-                        }}>
-                        <ThemedText style={styles.modalButtonText}>{flightManualMode ? 'Hide' : 'Edit details'}</ThemedText>
-                      </Pressable>
-                    </View>
-
-                    {!flightManualMode ? (
-                      <View
-                        style={[
-                          styles.flightLookupSummary,
-                          { borderColor: colors.border, backgroundColor: colors.surfaceMuted },
-                        ]}
-                      >
-                        <ThemedText style={styles.flightLookupSummaryLine}>
-                          Departure: {flightDepartureDate || '—'} {flightDepartureTime || ''}
-                        </ThemedText>
-                        <ThemedText style={styles.flightLookupSummaryLine}>
-                          Arrival: {flightArrivalDate || '—'} {flightArrivalTime || ''}
-                        </ThemedText>
-                        <ThemedText style={styles.flightLookupSummaryLine}>Airline: {flightAirline || '—'}</ThemedText>
-                        <ThemedText style={styles.flightLookupSummaryLine}>Flight: {flightNumber || '—'}</ThemedText>
-                        <ThemedText style={styles.flightLookupSummaryLine}>From: {flightFrom || '—'} {flightFromCity ? `(${flightFromCity})` : ''}</ThemedText>
-                        <ThemedText style={styles.flightLookupSummaryLine}>To: {flightTo || '—'} {flightToCity ? `(${flightToCity})` : ''}</ThemedText>
-                      </View>
                     ) : (
-                      <>
-                        <TextInput
-                          value={flightDepartureDate}
-                          onChangeText={setFlightDepartureDate}
-                          placeholder="Departure date (YYYY-MM-DD)"
-                          placeholderTextColor="#888"
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                        />
+                      <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent} keyboardShouldPersistTaps="handled">
+                        <ThemedText style={styles.modalSubtitle}>Confirm details</ThemedText>
 
-                        <TextInput
-                          value={flightDepartureTime}
-                          onChangeText={setFlightDepartureTime}
-                          placeholder="Departure time (HH:MM)"
-                          placeholderTextColor="#888"
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                        />
+                        {/* Flight card preview — same style as overview */}
+                        <View style={[styles.flightItem, { borderColor: colors.border, backgroundColor: colors.surfaceMuted, marginBottom: 12 }]}>
+                          <View style={styles.flightRouteRow}>
+                            <View style={styles.flightAirportBlock}>
+                              <ThemedText style={styles.flightAirportCode}>{flightFrom || '—'}</ThemedText>
+                              <ThemedText style={styles.flightAirportCity}>{flightFromCity || ''}</ThemedText>
+                            </View>
+                            <ThemedText style={[styles.flightArrow, { color: colors.primary }]}>→</ThemedText>
+                            <View style={[styles.flightAirportBlock, styles.flightAirportBlockRight]}>
+                              <ThemedText style={styles.flightAirportCode}>{flightTo || '—'}</ThemedText>
+                              <ThemedText style={styles.flightAirportCity}>{flightToCity || ''}</ThemedText>
+                            </View>
+                          </View>
+                          <ThemedText style={styles.flightTimeLine}>
+                            {formatFlightDayLine({
+                              departureDate: flightDepartureDate,
+                              departureTime: flightDepartureTime,
+                              arrivalTime: flightArrivalTime,
+                            })}
+                          </ThemedText>
+                          {(flightAirline || flightNumber) ? (
+                            <ThemedText style={[styles.flightAirportCity, { marginTop: 2 }]}>
+                              {[flightAirline, flightNumber].filter(Boolean).join(' · ')}
+                            </ThemedText>
+                          ) : null}
+                        </View>
 
-                        <TextInput
-                          value={flightArrivalDate}
-                          onChangeText={setFlightArrivalDate}
-                          placeholder="Arrival date (YYYY-MM-DD)"
-                          placeholderTextColor="#888"
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                        />
+                        <Pressable onPress={() => setFlightConfirmEditMode((v) => !v)} style={{ marginBottom: 8 }}>
+                          <ThemedText style={{ color: colors.primary, fontSize: 14, fontWeight: '600' }}>
+                            {flightConfirmEditMode ? 'Hide manual edit' : 'Edit details manually'}
+                          </ThemedText>
+                        </Pressable>
 
-                        <TextInput
-                          value={flightArrivalTime}
-                          onChangeText={setFlightArrivalTime}
-                          placeholder="Arrival time (HH:MM)"
-                          placeholderTextColor="#888"
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                        />
+                        {flightConfirmEditMode ? (
+                          <>
+                            {/* From airport — city auto-fills */}
+                            <View>
+                              <TextInput
+                                value={flightFrom}
+                                onChangeText={(v) => {
+                                  const code = v.toUpperCase();
+                                  setFlightFrom(code);
+                                  const city = airportCityMap[code];
+                                  if (city) setFlightFromCity(city);
+                                  computeArrival(flightDepartureDate, flightDepartureTime, flightDurationHours, flightDurationMinutes, code, flightTo);
+                                }}
+                                placeholder="From (e.g. JFK)"
+                                placeholderTextColor="#888"
+                                autoCapitalize="characters"
+                                maxLength={3}
+                                style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+                              />
+                            </View>
 
-                        <TextInput
-                          value={flightAirline}
-                          onChangeText={setFlightAirline}
-                          placeholder="Airline"
-                          placeholderTextColor="#888"
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                        />
+                            {/* To airport */}
+                            <TextInput
+                              value={flightTo}
+                              onChangeText={(v) => { const code = v.toUpperCase(); setFlightTo(code); const city = airportCityMap[code]; if (city) setFlightToCity(city); computeArrival(flightDepartureDate, flightDepartureTime, flightDurationHours, flightDurationMinutes, flightFrom, code); }}
+                              placeholder="To (e.g. LHR)"
+                              placeholderTextColor="#888"
+                              autoCapitalize="characters"
+                              maxLength={3}
+                              style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+                            />
 
-                        <TextInput
-                          value={flightNumber}
-                          onChangeText={setFlightNumber}
-                          placeholder="Flight number"
-                          placeholderTextColor="#888"
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                        />
+                            {/* Departure time picker */}
+                            <Pressable
+                              onPress={() => { setFlightDepTimeDraft(dateFromHhmm(flightDepartureTime)); setFlightDepTimePickerVisible(true); }}
+                              style={[styles.dateSelectButton, { borderColor: colors.border }]}>
+                              <ThemedText style={[styles.dateSelectButtonText, { color: flightDepartureTime ? colors.inputText : '#888' }]}>
+                                {flightDepartureTime ? formatTime12h(flightDepartureTime) : 'Departure time'}
+                              </ThemedText>
+                            </Pressable>
+                            <Modal visible={flightDepTimePickerVisible} transparent animationType="slide" onRequestClose={() => setFlightDepTimePickerVisible(false)}>
+                              <View style={styles.datePickerBackdrop}>
+                                <View style={[styles.datePickerCard, { backgroundColor: colors.surface }]}>
+                                  <View style={styles.datePickerHeader}>
+                                    <Pressable onPress={() => setFlightDepTimePickerVisible(false)} style={styles.datePickerHeaderButton}>
+                                      <ThemedText style={[styles.datePickerHeaderButtonText, { color: colors.primary }]}>Cancel</ThemedText>
+                                    </Pressable>
+                                    <ThemedText style={styles.datePickerTitle}>Departure time</ThemedText>
+                                    <Pressable onPress={() => { const t = hhmmFromDate(flightDepTimeDraft); setFlightDepartureTime(t); computeArrival(flightDepartureDate, t, flightDurationHours, flightDurationMinutes); setFlightDepTimePickerVisible(false); }} style={styles.datePickerHeaderButton}>
+                                      <ThemedText style={[styles.datePickerHeaderButtonText, { color: colors.primary }]}>Done</ThemedText>
+                                    </Pressable>
+                                  </View>
+                                  <DateTimePicker value={flightDepTimeDraft} mode="time" display="spinner" onChange={(_e: DateTimePickerEvent, d?: Date) => { if (d) setFlightDepTimeDraft(d); }} />
+                                </View>
+                              </View>
+                            </Modal>
 
-                        <TextInput
-                          value={flightFrom}
-                          onChangeText={setFlightFrom}
-                          placeholder="From"
-                          placeholderTextColor="#888"
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                        />
+                            {/* Flight duration → auto-calculates arrival */}
+                            <View>
+                              <ThemedText style={styles.flightStepLabel}>Flight duration</ThemedText>
+                              <View style={styles.durationRow}>
+                                <TextInput
+                                  value={flightDurationHours}
+                                  onChangeText={(v) => { setFlightDurationHours(v); computeArrival(flightDepartureDate, flightDepartureTime, v, flightDurationMinutes); }}
+                                  placeholder="0"
+                                  placeholderTextColor="#888"
+                                  keyboardType="number-pad"
+                                  maxLength={2}
+                                  style={[styles.durationInput, { borderColor: colors.border, color: colors.inputText }]}
+                                />
+                                <ThemedText style={styles.durationLabel}>hr</ThemedText>
+                                <TextInput
+                                  value={flightDurationMinutes}
+                                  onChangeText={(v) => { setFlightDurationMinutes(v); computeArrival(flightDepartureDate, flightDepartureTime, flightDurationHours, v); }}
+                                  placeholder="00"
+                                  placeholderTextColor="#888"
+                                  keyboardType="number-pad"
+                                  maxLength={2}
+                                  style={[styles.durationInput, { borderColor: colors.border, color: colors.inputText }]}
+                                />
+                                <ThemedText style={styles.durationLabel}>min</ThemedText>
+                              </View>
+                              {flightArrivalDate && flightArrivalTime ? (
+                                <ThemedText style={styles.arrivalHint}>
+                                  Arrives {formatLongDate(flightArrivalDate)} at {formatTime12h(flightArrivalTime)}
+                                </ThemedText>
+                              ) : null}
+                            </View>
+                          </>
+                        ) : null}
 
-                        <TextInput
-                          value={flightFromCity}
-                          onChangeText={setFlightFromCity}
-                          placeholder="From city (optional)"
-                          placeholderTextColor="#888"
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                        />
+                        {flightError ? <ThemedText style={styles.modalErrorText}>{flightError}</ThemedText> : null}
 
-                        <TextInput
-                          value={flightTo}
-                          onChangeText={setFlightTo}
-                          placeholder="To"
-                          placeholderTextColor="#888"
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                        />
-
-                        <TextInput
-                          value={flightToCity}
-                          onChangeText={setFlightToCity}
-                          placeholder="To city (optional)"
-                          placeholderTextColor="#888"
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                        />
-                      </>
+                        <View style={styles.modalActions}>
+                          <Pressable
+                            style={[styles.modalButton, { borderColor: colors.border }]}
+                            onPress={() => {
+                              setFlightModalVisible(false);
+                              setFlightError(null);
+                              setEditingFlightId(null);
+                            }}>
+                            <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
+                          </Pressable>
+                          <Pressable
+                            style={[
+                              styles.modalButton,
+                              styles.modalPrimaryButton,
+                              { backgroundColor: colors.primary, borderColor: colors.primary },
+                            ]}
+                            onPress={() => {
+                              if (!tripId) return;
+                              const depDate = flightDepartureDate.trim();
+                              const depTime = flightDepartureTime.trim();
+                              if (!depDate || !depTime) {
+                                setFlightError('Departure date and time are required.');
+                                return;
+                              }
+                              const payload = {
+                                segment: 'auto' as const,
+                                departureDate: depDate,
+                                departureTime: depTime,
+                                arrivalDate: flightArrivalDate.trim() || undefined,
+                                arrivalTime: flightArrivalTime.trim() || undefined,
+                                airline: flightAirline.trim() || undefined,
+                                flightNumber: flightNumber.trim() || undefined,
+                                from: flightFrom.trim() || undefined,
+                                fromCity: flightFromCity.trim() || undefined,
+                                to: flightTo.trim() || undefined,
+                                toCity: flightToCity.trim() || undefined,
+                              };
+                              if (editingFlightId) {
+                                updateFlight(tripId, editingFlightId, payload);
+                              } else {
+                                addFlight(tripId, payload);
+                              }
+                              setFlightModalVisible(false);
+                              setFlightError(null);
+                              setEditingFlightId(null);
+                            }}>
+                            <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Confirm</ThemedText>
+                          </Pressable>
+                        </View>
+                      </ScrollView>
                     )}
-
-                    {flightError ? <ThemedText style={styles.modalErrorText}>{flightError}</ThemedText> : null}
-
-                    <View style={styles.modalActions}>
-                      <Pressable
-                        style={[styles.modalButton, { borderColor: colors.border }]}
-                        onPress={() => {
-                          setFlightModalVisible(false);
-                          setFlightError(null);
-                          setEditingFlightId(null);
-                          setFlightSegment('auto');
-                        }}>
-                        <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
-                      </Pressable>
-
-                      <Pressable
-                        style={[
-                          styles.modalButton,
-                          styles.modalPrimaryButton,
-                          { backgroundColor: colors.primary, borderColor: colors.primary },
-                        ]}
-                        onPress={() => {
-                          if (!tripId) return;
-                          const depDate = flightDepartureDate.trim();
-                          const depTime = flightDepartureTime.trim();
-                          if (!depDate || !depTime) {
-                            setFlightError('Departure date and time are required.');
-                            return;
-                          }
-                          const payload = {
-                            segment: flightSegment,
-                            departureDate: depDate,
-                            departureTime: depTime,
-                            arrivalDate: flightArrivalDate.trim() ? flightArrivalDate.trim() : undefined,
-                            arrivalTime: flightArrivalTime.trim() ? flightArrivalTime.trim() : undefined,
-                            airline: flightAirline.trim() ? flightAirline.trim() : undefined,
-                            flightNumber: flightNumber.trim() ? flightNumber.trim() : undefined,
-                            from: flightFrom.trim() ? flightFrom.trim() : undefined,
-                            fromCity: flightFromCity.trim() ? flightFromCity.trim() : undefined,
-                            to: flightTo.trim() ? flightTo.trim() : undefined,
-                            toCity: flightToCity.trim() ? flightToCity.trim() : undefined,
-                          };
-
-                          if (editingFlightId) {
-                            updateFlight(tripId, editingFlightId, payload);
-                          } else {
-                            addFlight(tripId, payload);
-                          }
-                          setFlightModalVisible(false);
-                          setFlightError(null);
-                          setEditingFlightId(null);
-                          setFlightSegment('auto');
-                        }}>
-                        <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Save</ThemedText>
-                      </Pressable>
-                    </View>
-                  </ScrollView>
                 </View>
               </View>
             </Modal>
@@ -1807,8 +2428,24 @@ export default function TripDetailsScreen() {
                   itineraryDays.map((day) => {
                     const isExpanded = expandedDayIds.has(day.id);
                     return (
-                      <View
+                      <SwipeableDayCard
                         key={day.id}
+                        colors={colors}
+                        onDelete={() => {
+                          if (!tripId) return;
+                          deleteItineraryDay(tripId, day.id);
+                          setExpandedDayIds((prev) => {
+                            const next = new Set(prev);
+                            next.delete(day.id);
+                            return next;
+                          });
+                        }}
+                        onEdit={() => {
+                          setEditingDayId(day.id);
+                          setDayName(day.label);
+                          setDayModalVisible(true);
+                        }}>
+                      <View
                         style={[styles.dayCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
                         <Pressable
                           style={styles.dayCardHeaderRow}
@@ -1827,49 +2464,12 @@ export default function TripDetailsScreen() {
                             ) : null}
                           </View>
 
-                          {editMode ? (
-                            <View style={styles.inlineActionsRow}>
-                              <Pressable
-                                style={styles.inlineActionButton}
-                                onPress={() => {
-                                  setEditingDayId(day.id);
-                                  setDayName(day.label);
-                                  setDayModalVisible(true);
-                                }}>
-                                <ThemedText style={styles.inlineActionText}>Edit</ThemedText>
-                              </Pressable>
-
-                              <Pressable
-                                style={styles.inlineActionButton}
-                                onPress={() => {
-                                  if (!tripId) return;
-                                  Alert.alert('Delete day?', 'All events in this day will be removed.', [
-                                    { text: 'Cancel', style: 'cancel' },
-                                    {
-                                      text: 'Delete',
-                                      style: 'destructive',
-                                      onPress: () => {
-                                        deleteItineraryDay(tripId, day.id);
-                                        setExpandedDayIds((prev) => {
-                                          const next = new Set(prev);
-                                          next.delete(day.id);
-                                          return next;
-                                        });
-                                      },
-                                    },
-                                  ]);
-                                }}>
-                                <ThemedText style={[styles.inlineActionText, styles.destructiveText]}>Delete</ThemedText>
-                              </Pressable>
-                            </View>
-                          ) : (
-                            <IconSymbol
-                              name={isExpanded ? 'chevron.right' : 'chevron.right'}
-                              size={16}
-                              color={colors.icon}
-                              style={{ transform: [{ rotate: isExpanded ? '90deg' : '0deg' }] }}
-                            />
-                          )}
+                          <IconSymbol
+                            name="chevron.right"
+                            size={16}
+                            color={colors.icon}
+                            style={{ transform: [{ rotate: isExpanded ? '90deg' : '0deg' }] }}
+                          />
                         </Pressable>
 
                         {isExpanded ? (
@@ -1890,6 +2490,8 @@ export default function TripDetailsScreen() {
                                         </ThemedText>
                                       </View>
 
+                                      <ThemedText style={[styles.eventName, { flex: 1 }]} numberOfLines={1}>{e.name}</ThemedText>
+
                                       {editMode ? (
                                         <View style={styles.eventCardActions}>
                                           <Pressable
@@ -1901,6 +2503,8 @@ export default function TripDetailsScreen() {
                                               setEventTime(e.time);
                                               setEventTimeDate(parseTime24ToDate(e.time));
                                               setEventLocation(e.location ?? '');
+                                              setEventNotes(e.notes ?? '');
+                                              setEventTickets(e.tickets ?? []);
                                               setEventError(null);
                                               setEventModalVisible(true);
                                             }}>
@@ -1926,12 +2530,49 @@ export default function TripDetailsScreen() {
                                       ) : null}
                                     </View>
 
-                                    <ThemedText style={styles.eventName}>{e.name}</ThemedText>
+                                    {e.notes ? (
+                                      <ThemedText style={[styles.eventNotes, { color: colors.textMuted }]}>{e.notes}</ThemedText>
+                                    ) : null}
 
                                     {e.location ? (
-                                      <View style={styles.eventLocationRow}>
-                                        <IconSymbol name="mappin.and.ellipse" size={13} color={colors.icon} />
-                                        <ThemedText style={[styles.eventLocationText, { color: colors.icon }]}>{e.location}</ThemedText>
+                                      <Pressable
+                                        style={({ pressed }) => [styles.eventLocationRow, { opacity: pressed ? 0.6 : 1 }]}
+                                        onPress={() => {
+                                          const query = encodeURIComponent(e.location!);
+                                          Alert.alert(
+                                            e.location!,
+                                            'Open in maps',
+                                            [
+                                              {
+                                                text: 'Google Maps',
+                                                onPress: () => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${query}`),
+                                              },
+                                              {
+                                                text: 'Apple Maps',
+                                                onPress: () => Linking.openURL(`maps://?q=${query}`),
+                                              },
+                                              { text: 'Cancel', style: 'cancel' },
+                                            ],
+                                          );
+                                        }}>
+                                        <IconSymbol name="mappin.and.ellipse" size={13} color={colors.primary} />
+                                        <ThemedText style={[styles.eventLocationText, { color: colors.primary }]}>{e.location}</ThemedText>
+                                      </Pressable>
+                                    ) : null}
+
+                                    {e.tickets && e.tickets.length > 0 ? (
+                                      <View style={styles.eventTicketsRow}>
+                                        {e.tickets.map((ticket) => (
+                                          <Pressable
+                                            key={ticket.id}
+                                            style={({ pressed }) => [styles.eventTicketChip, { borderColor: colors.primary, opacity: pressed ? 0.6 : 1 }]}
+                                            onPress={() => WebBrowser.openBrowserAsync(ticket.url)}>
+                                            <IconSymbol name={ticket.type === 'pdf' ? 'doc.fill' : 'photo'} size={11} color={colors.primary} />
+                                            <ThemedText style={[styles.eventTicketChipText, { color: colors.primary }]} numberOfLines={1}>
+                                              {ticket.name}
+                                            </ThemedText>
+                                          </Pressable>
+                                        ))}
                                       </View>
                                     ) : null}
                                   </ThemedView>
@@ -1954,6 +2595,8 @@ export default function TripDetailsScreen() {
                                 setEventTime('');
                                 setEventTimeDate(new Date());
                                 setEventLocation('');
+                                setEventNotes('');
+                                setEventTickets([]);
                                 setEventError(null);
                                 setEditingEventId(null);
                                 setEventModalVisible(true);
@@ -1964,6 +2607,7 @@ export default function TripDetailsScreen() {
                           </View>
                         ) : null}
                       </View>
+                      </SwipeableDayCard>
                     );
                   })
                 ) : (
@@ -1988,12 +2632,41 @@ export default function TripDetailsScreen() {
                     style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
                   />
 
+                  {/* Date picker — only shown when adding a new day */}
+                  {!editingDayId ? (
+                    <>
+                      <Pressable
+                        style={[styles.modalInput, { borderColor: dayDatePickerVisible ? colors.primary : colors.border, justifyContent: 'center', flexDirection: 'row', alignItems: 'center', gap: 6 }]}
+                        onPress={() => setDayDatePickerVisible((v) => !v)}>
+                        <IconSymbol name="calendar" size={15} color={dayDatePickerVisible ? colors.primary : colors.icon} />
+                        <ThemedText style={{ color: dayDatePickerVisible ? colors.primary : colors.inputText, flex: 1 }}>
+                          {formatLongDate(toLocalIsoDate(dayDateDraft))}
+                        </ThemedText>
+                        <ThemedText style={{ color: colors.icon, fontSize: 12 }}>
+                          {dayDatePickerVisible ? 'Hide' : 'Change'}
+                        </ThemedText>
+                      </Pressable>
+
+                      {dayDatePickerVisible ? (
+                        <DateTimePicker
+                          value={dayDateDraft}
+                          mode="date"
+                          display="spinner"
+                          onChange={(_e, d) => { if (d) setDayDateDraft(d); }}
+                          textColor={colors.text}
+                        />
+                      ) : null}
+                    </>
+                  ) : null}
+
                   <View style={styles.modalActions}>
                     <Pressable
                       style={[styles.modalButton, { borderColor: colors.border }]}
                       onPress={() => {
                         setDayModalVisible(false);
                         setDayName('');
+                        setDayDatePickerVisible(false);
+                        setDayDateDraft(new Date());
                         setEditingDayId(null);
                       }}>
                       <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
@@ -2017,9 +2690,12 @@ export default function TripDetailsScreen() {
                           return;
                         }
 
-                        const day = addItineraryDay(tripId, label);
+                        const dateArg = dayDatePickerVisible ? toLocalIsoDate(dayDateDraft) : undefined;
+                        const day = addItineraryDay(tripId, label, dateArg);
                         setDayModalVisible(false);
                         setDayName('');
+                        setDayDatePickerVisible(false);
+                        setDayDateDraft(new Date());
                         setEditingDayId(null);
                         setExpandedDayIds((prev) => new Set(prev).add(day.id));
                       }}>
@@ -2034,11 +2710,21 @@ export default function TripDetailsScreen() {
               <View style={styles.modalOverlay}>
                 <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
                   <ThemedText style={styles.modalTitle}>{editingEventId ? 'Edit Event' : 'Add Event'}</ThemedText>
+                  <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
 
                   <TextInput
                     value={eventName}
                     onChangeText={setEventName}
                     placeholder="Event name"
+                    placeholderTextColor="#888"
+                    style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+                  />
+
+                  <ThemedText style={styles.eventModalSectionLabel}>Location</ThemedText>
+                  <TextInput
+                    value={eventLocation}
+                    onChangeText={setEventLocation}
+                    placeholder="Address or place name (optional)"
                     placeholderTextColor="#888"
                     style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
                   />
@@ -2057,15 +2743,60 @@ export default function TripDetailsScreen() {
                     />
                   </View>
 
+                  <ThemedText style={styles.eventModalSectionLabel}>Notes</ThemedText>
                   <TextInput
-                    value={eventLocation}
-                    onChangeText={setEventLocation}
-                    placeholder="Location (optional)"
+                    value={eventNotes}
+                    onChangeText={setEventNotes}
+                    placeholder="Any notes about this event (optional)"
                     placeholderTextColor="#888"
-                    style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+                    multiline
+                    numberOfLines={3}
+                    style={[styles.modalInput, styles.notesInput, { borderColor: colors.border, color: colors.inputText }]}
                   />
 
+                  {/* Tickets section */}
+                  <ThemedText style={styles.eventModalSectionLabel}>Tickets</ThemedText>
+                  {eventTickets.length > 0 ? (
+                    <View style={styles.ticketList}>
+                      {eventTickets.map((ticket) => (
+                        <View key={ticket.id} style={[styles.ticketRow, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+                          <IconSymbol
+                            name={ticket.type === 'pdf' ? 'doc.fill' : 'photo'}
+                            size={16}
+                            color={colors.primary}
+                          />
+                          <ThemedText
+                            style={[styles.ticketName, { color: colors.text }]}
+                            numberOfLines={1}
+                            onPress={() => WebBrowser.openBrowserAsync(ticket.url)}>
+                            {ticket.name}
+                          </ThemedText>
+                          <Pressable
+                            hitSlop={8}
+                            onPress={() => setEventTickets((prev) => prev.filter((t) => t.id !== ticket.id))}>
+                            <IconSymbol name="trash" size={15} color={colors.destructive} />
+                          </Pressable>
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+
+                  {ticketUploading ? (
+                    <View style={styles.ticketUploadingRow}>
+                      <ActivityIndicator size="small" color={colors.primary} />
+                      <ThemedText style={[styles.ticketUploadingText, { color: colors.icon }]}>Uploading…</ThemedText>
+                    </View>
+                  ) : (
+                    <Pressable
+                      style={[styles.ticketAttachButton, { borderColor: colors.primary }]}
+                      onPress={handleAttachTicket}>
+                      <IconSymbol name="plus" size={15} color={colors.primary} />
+                      <ThemedText style={[styles.ticketAttachText, { color: colors.primary }]}>Attach Ticket / PDF</ThemedText>
+                    </Pressable>
+                  )}
+
                   {eventError ? <ThemedText style={styles.modalErrorText}>{eventError}</ThemedText> : null}
+                  </ScrollView>
 
                   <View style={styles.modalActions}>
                     <Pressable
@@ -2075,6 +2806,7 @@ export default function TripDetailsScreen() {
                         setEventName('');
                         setEventTime('');
                         setEventLocation('');
+                        setEventTickets([]);
                         setEventError(null);
                         setEditingEventId(null);
                       }}>
@@ -2098,20 +2830,26 @@ export default function TripDetailsScreen() {
                           return;
                         }
 
+                        const notes = eventNotes.trim();
+
                         if (editingEventId) {
                           updateItineraryEvent(tripId, selectedDayId, editingEventId, {
                             name,
                             time,
                             location: location ? location : undefined,
+                            notes: notes ? notes : undefined,
+                            tickets: eventTickets,
                           });
                         } else {
-                          addItineraryEvent(tripId, selectedDayId, name, time, location ? location : undefined);
+                          addItineraryEvent(tripId, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets);
                         }
 
                         setEventModalVisible(false);
                         setEventName('');
                         setEventTime('');
                         setEventLocation('');
+                        setEventNotes('');
+                        setEventTickets([]);
                         setEventError(null);
                         setEditingEventId(null);
                       }}>
@@ -2150,7 +2888,7 @@ export default function TripDetailsScreen() {
                     .sort(([a], [b]) => a.localeCompare(b))
                     .map(([currency, amount]) => `${amount.toFixed(2)} ${currency}`);
 
-                  return parts.length ? parts.join(' | ') : '0';
+                  return parts.length ? parts.join(' | ') : '$0.00';
                 })()}
               </ThemedText>
             </ThemedView>
@@ -2335,23 +3073,37 @@ export default function TripDetailsScreen() {
           <ThemedView style={styles.tabContent}>
             <ThemedText style={styles.sectionTitle}>Journal</ThemedText>
 
-            {journalEntries.length > 0 ? (
+            {(() => {
+              // For shared trips, filter: show own entries + entries marked as shared
+              const visibleEntries = sharedTrip
+                ? journalEntries.filter((e) => e.authorId === uid || e.isShared)
+                : journalEntries;
+              return visibleEntries.length > 0 ? (
               <ThemedView style={styles.journalList}>
-                {journalEntries.map((entry) => (
+                {visibleEntries.map((entry) => (
                   <Pressable
                     key={entry.id}
                     style={[styles.journalCard, { borderColor: colors.border, backgroundColor: colors.surface }]}
                     onPress={() => {
                       if (!editMode) return;
-                      openJournalModal({ id: entry.id, date: entry.date, text: entry.text });
+                      openJournalModal({ id: entry.id, date: entry.date, text: entry.text, isShared: entry.isShared });
                     }}>
                     <View style={styles.journalHeaderRow}>
-                      <ThemedText style={styles.journalDate}>{entry.date}</ThemedText>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <ThemedText style={styles.journalDate}>{entry.date}</ThemedText>
+                        {sharedTrip ? (
+                          <IconSymbol
+                            name={entry.isShared ? 'globe' : 'lock.fill'}
+                            size={12}
+                            color={colors.icon}
+                          />
+                        ) : null}
+                      </View>
                       {editMode ? (
                         <View style={styles.inlineActionsRow}>
                           <Pressable
                             style={styles.inlineActionButton}
-                            onPress={() => openJournalModal({ id: entry.id, date: entry.date, text: entry.text })}>
+                            onPress={() => openJournalModal({ id: entry.id, date: entry.date, text: entry.text, isShared: entry.isShared })}>
                             <ThemedText style={[styles.inlineActionText, { color: colors.primary }]}>Edit</ThemedText>
                           </Pressable>
                           <Pressable
@@ -2382,7 +3134,8 @@ export default function TripDetailsScreen() {
               </ThemedView>
             ) : (
               <ThemedText style={styles.emptyText}>No journal entries yet.</ThemedText>
-            )}
+            );
+            })()}
 
             <Modal visible={journalModalVisible} transparent animationType="fade">
               <View style={styles.modalOverlay}>
@@ -2402,6 +3155,24 @@ export default function TripDetailsScreen() {
                       { borderColor: colors.border, color: colors.inputText },
                     ]}
                   />
+
+                  {sharedTrip ? (
+                    <View style={styles.journalShareRow}>
+                      <View style={{ flex: 1 }}>
+                        <ThemedText style={{ fontSize: 14, fontWeight: '600', color: colors.text }}>
+                          Share with trip
+                        </ThemedText>
+                        <ThemedText style={{ fontSize: 12, color: colors.icon }}>
+                          {journalIsShared ? 'Everyone on this trip can see this entry' : 'Only you can see this entry'}
+                        </ThemedText>
+                      </View>
+                      <Switch
+                        value={journalIsShared}
+                        onValueChange={setJournalIsShared}
+                        trackColor={{ false: colors.border, true: colors.primary }}
+                      />
+                    </View>
+                  ) : null}
 
                   {journalError ? <ThemedText style={styles.modalErrorText}>{journalError}</ThemedText> : null}
 
@@ -2431,9 +3202,14 @@ export default function TripDetailsScreen() {
                         }
 
                         if (editingJournalEntryId) {
-                          updateJournalEntry(tripId, editingJournalEntryId, { text });
+                          updateJournalEntry(tripId, editingJournalEntryId, { text, isShared: journalIsShared });
                         } else {
-                          addJournalEntry(tripId, { date: journalDate || getTodayIsoDate(), text });
+                          addJournalEntry(tripId, {
+                            date: journalDate || getTodayIsoDate(),
+                            text,
+                            isShared: journalIsShared,
+                            authorId: uid ?? undefined,
+                          });
                         }
                         setJournalModalVisible(false);
                         setJournalError(null);
@@ -2510,27 +3286,29 @@ export default function TripDetailsScreen() {
             </Animated.View>
           ) : null}
           <View style={styles.heroOverlay} />
-          <Animated.View style={[styles.heroContent, { opacity: heroCardOpacity }]}>
+          <Animated.View style={[styles.heroContent, { opacity: heroCardOpacity, paddingTop: insets.top + 8 }]}>
             <View style={[styles.heroDetailsCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <ThemedText style={[styles.tripDestination, { color: colors.text }]}>{trip?.destination ?? ''}</ThemedText>
-              <ThemedText style={[styles.tripLocationText, { color: colors.icon }]}>
-                {formatTripDateRange(trip?.startDate, trip?.endDate)}
-              </ThemedText>
-
-              <View style={styles.heroAvatarsRow}>
-                {tripPeople.slice(0, 6).map((p) => (
-                  <View
-                    key={p.id}
-                    style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
-                    <ThemedText style={styles.personAvatarText}>{getInitials(p.name)}</ThemedText>
-                  </View>
-                ))}
-
-                <Pressable
-                  style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
-                  onPress={openInviteModal}>
-                  <IconSymbol name="plus" size={18} color={colors.primary} />
-                </Pressable>
+              <View style={styles.heroCardInner}>
+                <View style={{ flex: 1 }}>
+                  <ThemedText style={[styles.tripDestination, { color: colors.text }]}>{trip?.destination ?? ''}</ThemedText>
+                  <ThemedText style={[styles.tripLocationText, { color: colors.icon }]}>
+                    {formatTripDateRange(trip?.startDate, trip?.endDate)}
+                  </ThemedText>
+                </View>
+                <View style={styles.heroAvatarsRow}>
+                  {tripPeople.slice(0, 4).map((p) => (
+                    <View
+                      key={p.id}
+                      style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+                      <ThemedText style={styles.personAvatarText}>{getInitials(p.name)}</ThemedText>
+                    </View>
+                  ))}
+                  <Pressable
+                    style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
+                    onPress={openInviteModal}>
+                    <IconSymbol name="plus" size={18} color={colors.primary} />
+                  </Pressable>
+                </View>
               </View>
             </View>
           </Animated.View>
@@ -2561,24 +3339,28 @@ export default function TripDetailsScreen() {
                   backgroundColor: colors.surface,
                   borderColor: colors.border,
                   opacity: stickyFadeAnim,
-                  marginTop: insets.top + 8,
+                  marginTop: insets.top + 2,
                 },
               ]}
               pointerEvents="none">
-              <ThemedText style={[styles.tripDestination, { color: colors.text }]}>{trip?.destination ?? ''}</ThemedText>
-              <ThemedText style={[styles.tripLocationText, { color: colors.icon }]}>
-                {formatTripDateRange(trip?.startDate, trip?.endDate)}
-              </ThemedText>
-              <View style={styles.heroAvatarsRow}>
-                {tripPeople.slice(0, 6).map((p) => (
-                  <View
-                    key={p.id}
-                    style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
-                    <ThemedText style={styles.personAvatarText}>{getInitials(p.name)}</ThemedText>
+              <View style={styles.heroCardInner}>
+                <View style={{ flex: 1 }}>
+                  <ThemedText style={[styles.tripDestination, { color: colors.text }]}>{trip?.destination ?? ''}</ThemedText>
+                  <ThemedText style={[styles.tripLocationText, { color: colors.icon }]}>
+                    {formatTripDateRange(trip?.startDate, trip?.endDate)}
+                  </ThemedText>
+                </View>
+                <View style={styles.heroAvatarsRow}>
+                  {tripPeople.slice(0, 4).map((p) => (
+                    <View
+                      key={p.id}
+                      style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+                      <ThemedText style={styles.personAvatarText}>{getInitials(p.name)}</ThemedText>
+                    </View>
+                  ))}
+                  <View style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+                    <IconSymbol name="plus" size={18} color={colors.primary} />
                   </View>
-                ))}
-                <View style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
-                  <IconSymbol name="plus" size={18} color={colors.primary} />
                 </View>
               </View>
             </Animated.View>
@@ -2600,7 +3382,7 @@ export default function TripDetailsScreen() {
           </ThemedView>
 
           <View style={styles.globalEditOverlay} pointerEvents="box-none">
-            {activeTab === 'overview' || activeTab === 'itinerary' ? null : (
+            {activeTab === 'overview' || (activeTab === 'itinerary' && !editMode) ? null : (
               <Pressable
                 style={[
                   styles.globalPlusButton,
@@ -2609,16 +3391,24 @@ export default function TripDetailsScreen() {
                 ]}
                 onPress={() => {
                   if (!tripId) return;
+                  if (activeTab === 'itinerary') {
+                    setDayName('');
+                    // Pre-fill with trip start date if available, otherwise today
+                    const defaultDate = trip?.startDate ? new Date(trip.startDate + 'T12:00:00') : new Date();
+                    setDayDateDraft(isNaN(defaultDate.getTime()) ? new Date() : defaultDate);
+                    setDayDatePickerVisible(true);
+                    setEditingDayId(null);
+                    setDayModalVisible(true);
+                    return;
+                  }
                   if (activeTab === 'finances') {
                     openExpenseModal();
                     return;
                   }
-
                   if (activeTab === 'journal') {
                     openJournalModal();
                     return;
                   }
-
                   if (activeTab === 'photos') {
                     Alert.alert('Select photos', 'Photo picking will be added soon.', [
                       { text: 'Cancel', style: 'cancel' },
@@ -2627,7 +3417,11 @@ export default function TripDetailsScreen() {
                   }
                 }}>
                 <IconSymbol name="plus" size={22} color={colors.primary} />
-                {activeTab === 'finances' ? (
+                {activeTab === 'itinerary' ? (
+                  <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
+                    Add Day
+                  </ThemedText>
+                ) : activeTab === 'finances' ? (
                   <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
                     Add Expense
                   </ThemedText>
@@ -2658,7 +3452,19 @@ export default function TripDetailsScreen() {
           { bottom: 24 },
         ]}>
         {activeTab === 'itinerary' ? (
-          <View ref={helpButtonRef} collapsable={false}>
+          <View ref={helpButtonRef} collapsable={false} style={{ alignItems: 'center', justifyContent: 'center' }}>
+            {/* Pulse ring */}
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.helpPulseRing,
+                {
+                  borderColor: colors.primary,
+                  opacity: helpPulseOpacity,
+                  transform: [{ scale: helpPulseScale }],
+                },
+              ]}
+            />
             <Pressable
               style={[styles.bottomNavButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
               onPress={() => {
@@ -2689,10 +3495,9 @@ export default function TripDetailsScreen() {
         </Pressable>
       </View>
 
-      {showItineraryTips ? (() => {
-        const tip = ITINERARY_TIPS[itineraryTipIndex];
+      {(() => {
         if (!tipAnchor) return null;
-
+        const tip = ITINERARY_TIPS[itineraryTipIndex];
         const screenH = Dimensions.get('window').height;
         const screenW = Dimensions.get('window').width;
         const bubbleMargin = 24;
@@ -2701,75 +3506,156 @@ export default function TripDetailsScreen() {
         let arrowLeft: number;
 
         if (tip?.target === 'dayCards') {
-          // Position bubble ABOVE the day cards, arrow points DOWN to them
           bubblePosition = { top: Math.max(tipAnchor.y - 14, 80) };
           arrowLeft = screenW / 2 - bubbleMargin - 10;
         } else {
-          // Position bubble ABOVE the button, arrow points DOWN to it
           bubblePosition = { bottom: screenH - tipAnchor.y + 14 };
           arrowLeft = tipAnchor.x + tipAnchor.w / 2 - bubbleMargin - 10;
         }
 
         return (
           <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-            <Pressable
-              style={[StyleSheet.absoluteFill, styles.tipOverlayBackdrop]}
-              onPress={() => {
-                if (itineraryTipIndex < ITINERARY_TIPS.length - 1) {
-                  setItineraryTipIndex((i) => i + 1);
-                } else {
-                  setShowItineraryTips(false);
-                  setItineraryTipIndex(0);
-                }
-              }}
-            />
+            {/* Animated backdrop */}
+            <Animated.View
+              style={[StyleSheet.absoluteFill, styles.tipOverlayBackdrop, { opacity: tipBackdropOpacity }]}
+              pointerEvents={showItineraryTips ? 'auto' : 'none'}>
+              <Pressable
+                style={StyleSheet.absoluteFill}
+                onPress={() => {
+                  if (itineraryTipIndex < ITINERARY_TIPS.length - 1) {
+                    setItineraryTipIndex((i) => i + 1);
+                  } else {
+                    setShowItineraryTips(false);
+                    setItineraryTipIndex(0);
+                  }
+                }}
+              />
+            </Animated.View>
 
-            <View
-              pointerEvents="box-none"
+            {/* Animated bubble */}
+            <Animated.View
+              pointerEvents={showItineraryTips ? 'box-none' : 'none'}
               style={[
                 styles.tipBubblePositioned,
                 { backgroundColor: colors.surface },
                 bubblePosition,
+                { opacity: tipBubbleOpacity, transform: [{ scale: tipBubbleScale }] },
               ]}>
-              <ThemedText style={styles.tipCounter}>
-                {itineraryTipIndex + 1}/{ITINERARY_TIPS.length}
-              </ThemedText>
-              <ThemedText style={styles.tipText}>
-                {tip?.text}
-              </ThemedText>
+
+              {/* Dot indicators */}
+              <View style={styles.tipDots}>
+                {ITINERARY_TIPS.map((_, i) => (
+                  <View
+                    key={i}
+                    style={[
+                      styles.tipDot,
+                      {
+                        backgroundColor: i === itineraryTipIndex ? colors.primary : colors.border,
+                        width: i === itineraryTipIndex ? 18 : 6,
+                      },
+                    ]}
+                  />
+                ))}
+              </View>
+
+              {/* Tip content with crossfade */}
+              <Animated.View style={{ opacity: tipContentOpacity, gap: 6 }}>
+                <ThemedText style={[styles.tipLabel, { color: colors.primary }]}>TIP</ThemedText>
+                <ThemedText style={[styles.tipText, { color: colors.text }]}>
+                  {tip?.text}
+                </ThemedText>
+              </Animated.View>
+
+              {/* Actions */}
               <View style={styles.tipActions}>
                 {itineraryTipIndex > 0 ? (
                   <Pressable
-                    style={[styles.tipButton, { borderColor: colors.border }]}
+                    hitSlop={8}
                     onPress={() => setItineraryTipIndex((i) => i - 1)}>
-                    <ThemedText style={[styles.tipButtonText, { color: colors.primary }]}>Back</ThemedText>
+                    <ThemedText style={[styles.tipBackText, { color: colors.icon }]}>← Back</ThemedText>
                   </Pressable>
                 ) : (
                   <View />
                 )}
                 {itineraryTipIndex < ITINERARY_TIPS.length - 1 ? (
                   <Pressable
-                    style={[styles.tipButton, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                    style={[styles.tipPillButton, { backgroundColor: colors.primary }]}
                     onPress={() => setItineraryTipIndex((i) => i + 1)}>
-                    <ThemedText style={[styles.tipButtonText, { color: '#fff' }]}>Next</ThemedText>
+                    <ThemedText style={styles.tipPillButtonText}>Next →</ThemedText>
                   </Pressable>
                 ) : (
                   <Pressable
-                    style={[styles.tipButton, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                    style={[styles.tipPillButton, { backgroundColor: colors.primary }]}
                     onPress={() => {
                       setShowItineraryTips(false);
                       setItineraryTipIndex(0);
                     }}>
-                    <ThemedText style={[styles.tipButtonText, { color: '#fff' }]}>Got it!</ThemedText>
+                    <ThemedText style={styles.tipPillButtonText}>Got it ✓</ThemedText>
                   </Pressable>
                 )}
               </View>
 
               <View style={[styles.tipArrowDown, { left: arrowLeft, borderTopColor: colors.surface }]} />
-            </View>
+            </Animated.View>
           </View>
         );
-      })() : null}
+      })()}
+
+      {/* Invite Modal */}
+      <Modal visible={inviteModalVisible} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
+            <ThemedText style={styles.modalTitle}>Invite to Trip</ThemedText>
+            <ThemedText style={[styles.modalSubtitle, { marginBottom: 12 }]}>
+              Enter a phone number or pick from contacts
+            </ThemedText>
+
+            <TextInput
+              value={invitePhone}
+              onChangeText={setInvitePhone}
+              placeholder="+1 (555) 123-4567"
+              placeholderTextColor="#888"
+              keyboardType="phone-pad"
+              autoComplete="tel"
+              style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+            />
+
+            <Pressable
+              style={[styles.modalButton, { borderColor: colors.border, marginTop: 8, marginBottom: 4 }]}
+              onPress={pickContact}>
+              <IconSymbol name="person.crop.circle" size={16} color={colors.primary} />
+              <ThemedText style={[styles.modalButtonText, { color: colors.primary, marginLeft: 6 }]}>
+                Pick from Contacts
+              </ThemedText>
+            </Pressable>
+
+            {inviteError ? <ThemedText style={styles.modalErrorText}>{inviteError}</ThemedText> : null}
+
+            <View style={[styles.modalActions, { marginTop: 12 }]}>
+              <Pressable
+                style={[styles.modalButton, { borderColor: colors.border }]}
+                onPress={() => setInviteModalVisible(false)}>
+                <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.modalButton,
+                  styles.modalPrimaryButton,
+                  { backgroundColor: colors.primary, borderColor: colors.primary },
+                ]}
+                disabled={inviteLoading}
+                onPress={handleSendInvite}>
+                {inviteLoading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Send Invite</ThemedText>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ThemedView>
   );
 }
@@ -2808,22 +3694,24 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 0,
+    top: 0,
     paddingHorizontal: 16,
-    paddingBottom: 14,
-    paddingTop: 90,
   },
   heroDetailsCard: {
     borderRadius: 16,
     borderWidth: 1,
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    gap: 6,
+    paddingVertical: 8,
+  },
+  heroCardInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   stickyDetailsCard: {
     marginTop: 8,
     marginHorizontal: 16,
-    marginBottom: 10,
+    marginBottom: 2,
   },
   header: {
     paddingTop: 60,
@@ -2845,10 +3733,10 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   stickyHeaderWrapper: {
-    paddingBottom: 4,
+    paddingBottom: 1,
   },
   tabsContainer: {
-    marginTop: 5,
+    marginTop: 6,
     marginHorizontal: 24,
     flexDirection: 'row',
     borderRadius: 16,
@@ -2856,7 +3744,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     gap: 4,
     backgroundColor: '#f0f0f0',
-    marginBottom: 16,
+    marginBottom: 8,
   },
   globalEditOverlay: {
     height: 8,
@@ -3016,8 +3904,7 @@ const styles = StyleSheet.create({
   heroAvatarsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingTop: 4,
+    gap: 6,
   },
   personAvatar: {
     width: 30,
@@ -3274,6 +4161,7 @@ const styles = StyleSheet.create({
   },
   itineraryContainer: {
     gap: 12,
+    paddingBottom: 100,
   },
   itineraryTopRow: {
     flexDirection: 'row',
@@ -3400,8 +4288,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   eventName: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
+    marginLeft: 8,
+  },
+  eventNotes: {
+    fontSize: 13,
+    marginTop: 6,
+    lineHeight: 18,
+  },
+  notesInput: {
+    minHeight: 72,
+    textAlignVertical: 'top',
+    paddingTop: 10,
   },
   eventMeta: {
     fontSize: 13,
@@ -3464,6 +4363,14 @@ const styles = StyleSheet.create({
   journalText: {
     fontSize: 14,
     lineHeight: 20,
+  },
+  journalShareRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    marginTop: 4,
+    gap: 12,
   },
   financesTotalCard: {
     borderWidth: 1,
@@ -3568,8 +4475,74 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  flightModalCard: {
-    maxHeight: '85%',
+  flightSheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  flightBottomSheet: {
+    height: '75%',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 16,
+    paddingTop: 8,
+  },
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#ccc',
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  airlineResultsFloat: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    borderWidth: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    maxHeight: 200,
+    zIndex: 20,
+  },
+  durationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  durationInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 16,
+    textAlign: 'center',
+    width: 60,
+  },
+  durationLabel: {
+    fontSize: 15,
+    opacity: 0.6,
+    marginRight: 4,
+  },
+  arrivalHint: {
+    fontSize: 12,
+    opacity: 0.55,
+    marginTop: 6,
+    marginLeft: 2,
+  },
+  flightStepLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    opacity: 0.5,
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  flightErrorBox: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
   },
   modalScroll: {
     flexGrow: 0,
@@ -3586,6 +4559,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 12,
     overflow: 'hidden',
+    maxHeight: 200,
   },
   airlineResultItem: {
     paddingHorizontal: 12,
@@ -3649,20 +4623,61 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   tipOverlayBackdrop: {
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.62)',
+    flex: 1,
   },
   tipBubblePositioned: {
     position: 'absolute',
-    left: 24,
-    right: 24,
-    borderRadius: 16,
-    padding: 24,
-    gap: 14,
+    left: 20,
+    right: 20,
+    borderRadius: 22,
+    padding: 22,
+    gap: 16,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.18,
-    shadowRadius: 10,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.28,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  tipDots: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  tipDot: {
+    height: 6,
+    borderRadius: 3,
+  },
+  tipLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+  },
+  tipText: {
+    fontSize: 17,
+    fontWeight: '500',
+    lineHeight: 25,
+  },
+  tipBackText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  tipActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  tipPillButton: {
+    borderRadius: 100,
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+  },
+  tipPillButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   tipArrowDown: {
     position: 'absolute',
@@ -3686,32 +4701,12 @@ const styles = StyleSheet.create({
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
   },
-  tipCounter: {
-    fontSize: 12,
-    fontWeight: '700',
-    opacity: 0.45,
-    textAlign: 'right',
-  },
-  tipText: {
-    fontSize: 16,
-    fontWeight: '500',
-    lineHeight: 23,
-  },
-  tipActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  tipButton: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-  },
-  tipButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
+  helpPulseRing: {
+    position: 'absolute',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1.5,
   },
   emptyEventsCard: {
     alignItems: 'center',
@@ -3791,5 +4786,68 @@ const styles = StyleSheet.create({
   },
   eventLocationText: {
     fontSize: 13,
+  },
+  eventTicketsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 6,
+  },
+  eventTicketChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    maxWidth: 160,
+  },
+  eventTicketChipText: {
+    fontSize: 11,
+    fontWeight: '500',
+    flexShrink: 1,
+  },
+  ticketList: {
+    gap: 6,
+    marginBottom: 8,
+  },
+  ticketRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  ticketName: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  ticketUploadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  ticketUploadingText: {
+    fontSize: 13,
+  },
+  ticketAttachButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  ticketAttachText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

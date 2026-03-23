@@ -1,226 +1,488 @@
-import React, { useCallback, useState } from 'react';
+import * as Haptics from 'expo-haptics';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    StyleSheet,
-    TextInput,
+  ActivityIndicator,
+  Animated,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  StyleSheet,
+  TextInput,
+  TouchableWithoutFeedback,
+  View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { supabase } from '@/config/supabase';
+
+const OTP_LENGTH = 6;
 
 type Step = 'phone' | 'otp';
 
 export default function AuthScreen() {
   const theme = useColorScheme() ?? 'light';
   const colors = Colors[theme];
+  const insets = useSafeAreaInsets();
 
   const [step, setStep] = useState<Step>('phone');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [otpFocused, setOtpFocused] = useState(false);
+
+  const phoneInputRef = useRef<TextInput>(null);
+  const otpInputRef = useRef<TextInput>(null);
+
+  // Mount animation
+  const heroOpacity = useRef(new Animated.Value(0)).current;
+  const heroTranslateY = useRef(new Animated.Value(24)).current;
+
+  // Step transition animations
+  const phoneOpacity = useRef(new Animated.Value(1)).current;
+  const phoneTranslateX = useRef(new Animated.Value(0)).current;
+  const otpOpacity = useRef(new Animated.Value(0)).current;
+  const otpTranslateX = useRef(new Animated.Value(60)).current;
+
+  // Button press scale
+  const buttonScale = useRef(new Animated.Value(1)).current;
+
+  // OTP cursor blink
+  const cursorOpacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(heroOpacity, { toValue: 1, duration: 700, useNativeDriver: true }),
+      Animated.timing(heroTranslateY, { toValue: 0, duration: 700, useNativeDriver: true }),
+    ]).start();
+
+    // Cursor blink loop
+    const blink = Animated.loop(
+      Animated.sequence([
+        Animated.timing(cursorOpacity, { toValue: 0, duration: 500, useNativeDriver: true }),
+        Animated.timing(cursorOpacity, { toValue: 1, duration: 500, useNativeDriver: true }),
+      ]),
+    );
+    blink.start();
+    return () => blink.stop();
+  }, []);
+
+  const goToOtp = () => {
+    Animated.parallel([
+      Animated.timing(phoneOpacity, { toValue: 0, duration: 220, useNativeDriver: true }),
+      Animated.timing(phoneTranslateX, { toValue: -60, duration: 220, useNativeDriver: true }),
+    ]).start(() => {
+      setStep('otp');
+      Animated.parallel([
+        Animated.timing(otpOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
+        Animated.timing(otpTranslateX, { toValue: 0, duration: 260, useNativeDriver: true }),
+      ]).start(() => {
+        otpInputRef.current?.focus();
+      });
+    });
+  };
+
+  const goToPhone = () => {
+    Animated.parallel([
+      Animated.timing(otpOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
+      Animated.timing(otpTranslateX, { toValue: 60, duration: 200, useNativeDriver: true }),
+    ]).start(() => {
+      setStep('phone');
+      setOtpCode('');
+      setError(null);
+      otpTranslateX.setValue(60);
+      phoneTranslateX.setValue(0);
+      Animated.parallel([
+        Animated.timing(phoneOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
+        Animated.timing(phoneTranslateX, { toValue: 0, duration: 260, useNativeDriver: true }),
+      ]).start(() => {
+        phoneInputRef.current?.focus();
+      });
+    });
+  };
+
+  const pressIn = () => {
+    Animated.spring(buttonScale, { toValue: 0.96, useNativeDriver: true, speed: 50 }).start();
+  };
+
+  const pressOut = () => {
+    Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true, speed: 50 }).start();
+  };
 
   const normalizePhone = (raw: string) => {
     const trimmed = raw.trim();
     if (trimmed.startsWith('+')) return trimmed;
-    const digits = trimmed.replace(/\D/g, '');
-    return `+1${digits}`;
+    return `+1${trimmed.replace(/\D/g, '')}`;
   };
 
   const sendCode = useCallback(async () => {
-    const raw = phoneNumber.trim();
-    const digits = raw.replace(/\D/g, '');
-
+    const digits = phoneNumber.replace(/\D/g, '');
     if (digits.length < 10) {
-      setError('Enter a valid phone number (10+ digits or include country code).');
+      setError('Enter a valid phone number.');
       return;
     }
-
     setError(null);
     setLoading(true);
-
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const normalized = normalizePhone(raw);
-      const { error: err } = await supabase.auth.signInWithOtp({ phone: normalized });
+      const { error: err } = await supabase.auth.signInWithOtp({ phone: normalizePhone(phoneNumber) });
       if (err) throw err;
-      setStep('otp');
+      goToOtp();
     } catch (e: any) {
-      setError(e?.message || 'Failed to send verification code.');
+      setError(e?.message || 'Failed to send code.');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setLoading(false);
     }
   }, [phoneNumber]);
 
   const verifyCode = useCallback(async () => {
-    const code = otpCode.trim();
-
-    if (code.length < 6) {
-      setError('Please enter the 6-digit code.');
+    if (otpCode.length < OTP_LENGTH) {
+      setError('Enter the full 6-digit code.');
       return;
     }
-
     setError(null);
     setLoading(true);
-
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const normalized = normalizePhone(phoneNumber.trim());
       const { error: err } = await supabase.auth.verifyOtp({
-        phone: normalized,
-        token: code,
+        phone: normalizePhone(phoneNumber),
+        token: otpCode,
         type: 'sms',
       });
       if (err) throw err;
     } catch (e: any) {
       setError(e?.message || 'Invalid code. Please try again.');
+      setOtpCode('');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setLoading(false);
     }
   }, [phoneNumber, otpCode]);
 
-  return (
-    <ThemedView style={styles.container}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.inner}>
+  // Auto-verify when all 6 digits entered
+  useEffect(() => {
+    if (otpCode.length === OTP_LENGTH) {
+      verifyCode();
+    }
+  }, [otpCode]);
 
-        <ThemedView style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-          {step === 'phone' ? (
-            <>
-              <ThemedText style={styles.title}>Welcome</ThemedText>
-              <ThemedText style={styles.subtitle}>
-                Enter your phone number to sign in. We'll text you a verification code.
+  const maskedPhone = phoneNumber.replace(/\D/g, '').slice(-4);
+
+  return (
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+      <View style={[styles.root, { backgroundColor: colors.background }]}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.flex}>
+
+          {/* Back button — only on OTP step */}
+          <View style={[styles.backRow, { paddingTop: insets.top + 12 }]}>
+            {step === 'otp' ? (
+              <Pressable onPress={goToPhone} hitSlop={16} style={styles.backButton}>
+                <ThemedText style={[styles.backText, { color: colors.primary }]}>← Back</ThemedText>
+              </Pressable>
+            ) : null}
+          </View>
+
+          {/* Brand hero */}
+          <Animated.View
+            style={[styles.hero, { opacity: heroOpacity, transform: [{ translateY: heroTranslateY }] }]}>
+            <View style={[styles.logoMark, { backgroundColor: colors.primary }]}>
+              <ThemedText style={styles.logoIcon}>✈</ThemedText>
+            </View>
+            <ThemedText style={[styles.brandName, { color: colors.text }]}>Shmoves</ThemedText>
+            <ThemedText style={[styles.tagline, { color: colors.icon }]}>Plan trips together.</ThemedText>
+          </Animated.View>
+
+          {/* Content area */}
+          <View style={styles.contentArea}>
+
+            {/* ── Phone step ── */}
+            <Animated.View
+              pointerEvents={step === 'phone' ? 'auto' : 'none'}
+              style={[
+                styles.stepPanel,
+                {
+                  opacity: phoneOpacity,
+                  transform: [{ translateX: phoneTranslateX }],
+                  position: step === 'otp' ? 'absolute' : 'relative',
+                },
+              ]}>
+              <ThemedText style={[styles.stepHeading, { color: colors.text }]}>
+                What's your number?
+              </ThemedText>
+              <ThemedText style={[styles.stepSub, { color: colors.icon }]}>
+                We'll text you a one-time code to sign in.
               </ThemedText>
 
               <TextInput
+                ref={phoneInputRef}
                 value={phoneNumber}
                 onChangeText={setPhoneNumber}
                 placeholder="+1 (555) 123-4567"
-                placeholderTextColor="#888"
+                placeholderTextColor={colors.icon}
                 keyboardType="phone-pad"
                 autoComplete="tel"
                 editable={!loading}
-                style={[styles.input, { borderColor: colors.border, color: colors.inputText }]}
+                returnKeyType="done"
+                onSubmitEditing={sendCode}
+                style={[styles.phoneInput, { borderBottomColor: colors.border, color: colors.inputText }]}
               />
 
-              {error ? <ThemedText style={styles.errorText}>{error}</ThemedText> : null}
+              {error && step === 'phone' ? (
+                <ThemedText style={styles.errorText}>{error}</ThemedText>
+              ) : null}
+            </Animated.View>
 
-              <Pressable
-                style={[styles.button, { backgroundColor: colors.primary, opacity: loading ? 0.6 : 1 }]}
-                onPress={sendCode}
-                disabled={loading}>
-                {loading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <ThemedText style={styles.buttonText}>Send Code</ThemedText>
-                )}
-              </Pressable>
-            </>
-          ) : (
-            <>
-              <ThemedText style={styles.title}>Verify</ThemedText>
-              <ThemedText style={styles.subtitle}>
-                Enter the 6-digit code sent to {phoneNumber}.
+            {/* ── OTP step ── */}
+            <Animated.View
+              pointerEvents={step === 'otp' ? 'auto' : 'none'}
+              style={[
+                styles.stepPanel,
+                {
+                  opacity: otpOpacity,
+                  transform: [{ translateX: otpTranslateX }],
+                  position: step === 'phone' ? 'absolute' : 'relative',
+                },
+              ]}>
+              <ThemedText style={[styles.stepHeading, { color: colors.text }]}>
+                Check your{'\n'}messages.
+              </ThemedText>
+              <ThemedText style={[styles.stepSub, { color: colors.icon }]}>
+                Code sent to ···· {maskedPhone}
               </ThemedText>
 
+              {/* Hidden input that captures OTP */}
               <TextInput
+                ref={otpInputRef}
                 value={otpCode}
-                onChangeText={setOtpCode}
-                placeholder="123456"
-                placeholderTextColor="#888"
+                onChangeText={(t) => setOtpCode(t.replace(/\D/g, '').slice(0, OTP_LENGTH))}
                 keyboardType="number-pad"
-                maxLength={6}
-                autoFocus
+                maxLength={OTP_LENGTH}
+                onFocus={() => setOtpFocused(true)}
+                onBlur={() => setOtpFocused(false)}
+                style={styles.hiddenInput}
                 editable={!loading}
-                style={[
-                  styles.input,
-                  { borderColor: colors.border, color: colors.inputText, textAlign: 'center', fontSize: 24, letterSpacing: 8 },
-                ]}
               />
 
-              {error ? <ThemedText style={styles.errorText}>{error}</ThemedText> : null}
+              {/* 6 digit display boxes */}
+              <Pressable onPress={() => otpInputRef.current?.focus()} style={styles.otpRow}>
+                {Array.from({ length: OTP_LENGTH }).map((_, i) => {
+                  const digit = otpCode[i] ?? '';
+                  const isActive = otpFocused && i === otpCode.length && i < OTP_LENGTH;
+                  const isFilled = !!digit;
+                  return (
+                    <View
+                      key={i}
+                      style={[
+                        styles.otpBox,
+                        {
+                          borderColor: isActive ? colors.primary : isFilled ? colors.text : colors.border,
+                          backgroundColor: isFilled ? (theme === 'dark' ? colors.surfaceMuted : '#f7f7f7') : 'transparent',
+                        },
+                      ]}>
+                      {digit ? (
+                        <ThemedText style={[styles.otpDigit, { color: colors.text }]}>{digit}</ThemedText>
+                      ) : isActive ? (
+                        <Animated.View
+                          style={[styles.cursor, { backgroundColor: colors.primary, opacity: cursorOpacity }]}
+                        />
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </Pressable>
 
+              {error && step === 'otp' ? (
+                <ThemedText style={styles.errorText}>{error}</ThemedText>
+              ) : null}
+            </Animated.View>
+          </View>
+
+          {/* Bottom actions */}
+          <View style={[styles.bottomArea, { paddingBottom: insets.bottom + 24 }]}>
+            <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
               <Pressable
-                style={[styles.button, { backgroundColor: colors.primary, opacity: loading ? 0.6 : 1 }]}
-                onPress={verifyCode}
+                style={[styles.pill, { backgroundColor: colors.primary }]}
+                onPressIn={pressIn}
+                onPressOut={pressOut}
+                onPress={step === 'phone' ? sendCode : verifyCode}
                 disabled={loading}>
                 {loading ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <ThemedText style={styles.buttonText}>Verify</ThemedText>
+                  <ThemedText style={styles.pillText}>
+                    {step === 'phone' ? 'Continue' : 'Verify'} →
+                  </ThemedText>
                 )}
               </Pressable>
+            </Animated.View>
 
-              <Pressable
-                onPress={() => {
-                  setStep('phone');
-                  setOtpCode('');
-                  setError(null);
-                }}>
-                <ThemedText style={[styles.linkText, { color: colors.primary }]}>
-                  Use a different number
+            {step === 'otp' ? (
+              <Pressable onPress={sendCode} disabled={loading} hitSlop={12}>
+                <ThemedText style={[styles.resendText, { color: colors.icon }]}>
+                  Didn't get a code?{' '}
+                  <ThemedText style={[styles.resendText, { color: colors.primary }]}>Resend</ThemedText>
                 </ThemedText>
               </Pressable>
-            </>
-          )}
-        </ThemedView>
-      </KeyboardAvoidingView>
-    </ThemedView>
+            ) : (
+              <ThemedText style={[styles.disclaimer, { color: colors.icon }]}>
+                By continuing you agree to our Terms & Privacy Policy.
+              </ThemedText>
+            )}
+          </View>
+
+        </KeyboardAvoidingView>
+      </View>
+    </TouchableWithoutFeedback>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
   },
-  inner: {
+  flex: {
     flex: 1,
-    padding: 24,
+  },
+  backRow: {
+    paddingHorizontal: 28,
+    height: 52,
     justifyContent: 'center',
   },
-  card: {
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 20,
-    gap: 14,
+  backButton: {
+    alignSelf: 'flex-start',
   },
-  title: {
+  backText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  hero: {
+    alignItems: 'center',
+    paddingTop: 32,
+    paddingBottom: 40,
+    gap: 10,
+  },
+  logoMark: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  logoIcon: {
+    fontSize: 26,
+    color: '#fff',
+  },
+  brandName: {
+    fontSize: 34,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  tagline: {
+    fontSize: 16,
+    fontWeight: '400',
+    letterSpacing: 0.2,
+  },
+  contentArea: {
+    flex: 1,
+    paddingHorizontal: 28,
+  },
+  stepPanel: {
+    width: '100%',
+    gap: 12,
+  },
+  stepHeading: {
     fontSize: 28,
     fontWeight: '700',
+    letterSpacing: -0.4,
+    lineHeight: 36,
+    marginBottom: 2,
   },
-  subtitle: {
-    opacity: 0.7,
-    lineHeight: 20,
+  stepSub: {
+    fontSize: 15,
+    lineHeight: 22,
+    marginBottom: 8,
   },
-  input: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
+  phoneInput: {
+    fontSize: 22,
+    fontWeight: '500',
+    borderBottomWidth: 1.5,
+    paddingBottom: 12,
+    paddingTop: 4,
+    letterSpacing: 0.3,
+  },
+  hiddenInput: {
+    position: 'absolute',
+    opacity: 0,
+    width: 1,
+    height: 1,
+  },
+  otpRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 8,
+  },
+  otpBox: {
+    flex: 1,
+    height: 58,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  otpDigit: {
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  cursor: {
+    width: 2,
+    height: 24,
+    borderRadius: 1,
   },
   errorText: {
-    color: '#d00',
-    fontWeight: '600',
+    color: '#D12C2C',
     fontSize: 13,
+    fontWeight: '600',
+    marginTop: 4,
   },
-  button: {
-    borderRadius: 10,
-    paddingVertical: 14,
+  bottomArea: {
+    paddingHorizontal: 28,
+    gap: 16,
     alignItems: 'center',
   },
-  buttonText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 16,
+  pill: {
+    borderRadius: 100,
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 240,
+    shadowColor: '#007AFF',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 6,
   },
-  linkText: {
-    textAlign: 'center',
+  pillText: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  resendText: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '500',
+  },
+  disclaimer: {
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+    opacity: 0.7,
   },
 });
