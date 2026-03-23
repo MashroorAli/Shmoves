@@ -18,14 +18,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    const upsertProfile = async (user: User) => {
+      if (!user.phone) return;
+      await supabase.from('profiles').upsert(
+        { id: user.id, phone: user.phone },
+        { onConflict: 'id' }
+      );
+    };
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       setIsLoading(false);
+      if (session?.user) upsertProfile(session.user);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
       setIsLoading(false);
+      if (session?.user) upsertProfile(session.user);
     });
 
     return () => subscription.unsubscribe();

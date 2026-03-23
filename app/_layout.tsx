@@ -6,6 +6,7 @@ import React, { useEffect } from 'react';
 import 'react-native-reanimated';
 
 import { AuthProvider, useAuth } from '@/context/auth-context';
+import { SharedTripsProvider } from '@/context/shared-trips-context';
 import { TripsProvider } from '@/context/trips-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
@@ -55,5 +56,11 @@ function RootLayoutGate({ children }: { children: React.ReactNode }) {
 
   if (isLoading) return null;
 
-  return <TripsProvider userKey={uid}>{children}</TripsProvider>;
+  return (
+    <TripsProvider userKey={uid}>
+      <SharedTripsProvider uid={uid}>
+        {children}
+      </SharedTripsProvider>
+    </TripsProvider>
+  );
 }

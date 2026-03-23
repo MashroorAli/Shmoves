@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "HabitTracker",
-    "slug": "HabitTracker",
+    "name": "Shmoves",
+    "slug": "shmoves",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "habittracker",
+    "scheme": "shmoves",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
