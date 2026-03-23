@@ -141,7 +141,7 @@ export default function HomeScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <ThemedText type="title">Trip Planner</ThemedText>
+      <ThemedText type="title">Shmoves</ThemedText>
 
       <ThemedView style={styles.section}>
         <ThemedText style={styles.label}>Where are you going?</ThemedText>

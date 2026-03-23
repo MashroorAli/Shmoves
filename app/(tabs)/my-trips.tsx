@@ -158,7 +158,7 @@ export default function MyTripsScreen() {
     <ThemedView style={styles.container}>
       <ThemedView style={styles.header}>
         <View style={styles.headerRow}>
-          <ThemedText type="title">My Trips</ThemedText>
+          <ThemedText type="title">My Shmoves</ThemedText>
           <View style={styles.headerActions}>
             <Pressable
               onPress={() => {

@@ -27,7 +27,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="my-trips"
         options={{
-          title: 'My Trips',
+          title: 'My Shmoves',
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="briefcase.fill" color={color} />,
         }}
       />
@@ -35,8 +35,16 @@ export default function TabLayout() {
       <Tabs.Screen
         name="activity"
         options={{
-          title: 'Movements',
+          title: 'Shmovements',
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="person.2.fill" color={color} />,
+        }}
+      />
+
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: 'My Profile',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="person.crop.circle" color={color} />,
         }}
       />
 
