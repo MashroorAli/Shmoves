@@ -1,4 +1,5 @@
 import * as Haptics from 'expo-haptics';
+import * as Linking from 'expo-linking';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -194,7 +195,7 @@ export default function AuthScreen() {
             <View style={[styles.logoMark, { backgroundColor: colors.primary }]}>
               <ThemedText style={styles.logoIcon}>✈</ThemedText>
             </View>
-            <ThemedText style={[styles.brandName, { color: colors.text }]}>Shmoves</ThemedText>
+            <ThemedText style={[styles.brandName, { color: colors.text }]} numberOfLines={1}>Shmoves</ThemedText>
             <ThemedText style={[styles.tagline, { color: colors.icon }]}>Plan trips together.</ThemedText>
           </Animated.View>
 
@@ -331,7 +332,19 @@ export default function AuthScreen() {
               </Pressable>
             ) : (
               <ThemedText style={[styles.disclaimer, { color: colors.icon }]}>
-                By continuing you agree to our Terms & Privacy Policy.
+                By continuing you agree to our{' '}
+                <ThemedText
+                  style={[styles.disclaimerLink, { color: colors.primary }]}
+                  onPress={() => Linking.openURL('https://mashroorali.github.io/Shmoves/terms')}>
+                  Terms
+                </ThemedText>
+                {' & '}
+                <ThemedText
+                  style={[styles.disclaimerLink, { color: colors.primary }]}
+                  onPress={() => Linking.openURL('https://mashroorali.github.io/Shmoves/privacy')}>
+                  Privacy Policy
+                </ThemedText>
+                .
               </ThemedText>
             )}
           </View>
@@ -382,7 +395,8 @@ const styles = StyleSheet.create({
   brandName: {
     fontSize: 34,
     fontWeight: '800',
-    letterSpacing: -0.5,
+    letterSpacing: 0,
+    paddingHorizontal: 8,
   },
   tagline: {
     fontSize: 16,
@@ -484,5 +498,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 18,
     opacity: 0.7,
+  },
+  disclaimerLink: {
+    fontSize: 12,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
   },
 });
