@@ -5,17 +5,17 @@
 
 import { Platform } from 'react-native';
 
-const tintColorLight = '#0a7ea4';
-const tintColorDark = '#fff';
+const tintColorLight = '#7C3AED';
+const tintColorDark = '#A78BFA';
 
 export const Colors = {
   light: {
     text: '#11181C',
     background: '#fff',
     surface: '#fff',
-    surfaceMuted: '#f0f0f0',
+    surfaceMuted: '#f5f0ff',
     border: '#ddd',
-    primary: '#007AFF',
+    primary: '#7C3AED',
     destructive: '#D12C2C',
     inputText: '#111',
     tint: tintColorLight,
@@ -29,7 +29,7 @@ export const Colors = {
     surface: '#1C1C1E',
     surfaceMuted: '#2C2C2E',
     border: '#3A3A3C',
-    primary: '#0A84FF',
+    primary: '#A78BFA',
     destructive: '#FF453A',
     inputText: '#ECEDEE',
     tint: tintColorDark,

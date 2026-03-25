@@ -1,8 +1,10 @@
 import * as Haptics from 'expo-haptics';
+import * as Linking from 'expo-linking';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -191,10 +193,11 @@ export default function AuthScreen() {
           {/* Brand hero */}
           <Animated.View
             style={[styles.hero, { opacity: heroOpacity, transform: [{ translateY: heroTranslateY }] }]}>
-            <View style={[styles.logoMark, { backgroundColor: colors.primary }]}>
-              <ThemedText style={styles.logoIcon}>✈</ThemedText>
-            </View>
-            <ThemedText style={[styles.brandName, { color: colors.text }]}>Shmoves</ThemedText>
+            <Image
+              source={require('../assets/images/shmoves.png')}
+              style={styles.logoImage}
+              resizeMode="contain"
+            />
             <ThemedText style={[styles.tagline, { color: colors.icon }]}>Plan trips together.</ThemedText>
           </Animated.View>
 
@@ -331,7 +334,19 @@ export default function AuthScreen() {
               </Pressable>
             ) : (
               <ThemedText style={[styles.disclaimer, { color: colors.icon }]}>
-                By continuing you agree to our Terms & Privacy Policy.
+                By continuing you agree to our{' '}
+                <ThemedText
+                  style={[styles.disclaimerLink, { color: colors.primary }]}
+                  onPress={() => Linking.openURL('https://mashroorali.github.io/Shmoves/terms.html')}>
+                  Terms
+                </ThemedText>
+                {' & '}
+                <ThemedText
+                  style={[styles.disclaimerLink, { color: colors.primary }]}
+                  onPress={() => Linking.openURL('https://mashroorali.github.io/Shmoves/privacy.html')}>
+                  Privacy Policy
+                </ThemedText>
+                .
               </ThemedText>
             )}
           </View>
@@ -363,26 +378,14 @@ const styles = StyleSheet.create({
   },
   hero: {
     alignItems: 'center',
-    paddingTop: 32,
-    paddingBottom: 40,
-    gap: 10,
+    paddingTop: 24,
+    paddingBottom: 32,
+    gap: 12,
   },
-  logoMark: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
-  logoIcon: {
-    fontSize: 26,
-    color: '#fff',
-  },
-  brandName: {
-    fontSize: 34,
-    fontWeight: '800',
-    letterSpacing: -0.5,
+  logoImage: {
+    width: 200,
+    height: 100,
+    borderRadius: 20,
   },
   tagline: {
     fontSize: 16,
@@ -463,7 +466,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     minWidth: 240,
-    shadowColor: '#007AFF',
+    shadowColor: '#7C3AED',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 12,
@@ -484,5 +487,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 18,
     opacity: 0.7,
+  },
+  disclaimerLink: {
+    fontSize: 12,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
   },
 });
