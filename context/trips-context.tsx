@@ -145,6 +145,9 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
   const [journalByTripId, setJournalByTripId] = useState<Record<string, JournalEntry[]>>({});
   const [housingByTripId, setHousingByTripId] = useState<Record<string, TripHousing[]>>({});
   const [isHydrated, setIsHydrated] = useState(false);
+  // Only true when hydration completed successfully — prevents persist from
+  // overwriting DB with empty state on a failed read.
+  const [hydrationOk, setHydrationOk] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -157,11 +160,13 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
         setExpensesByTripId({});
         setJournalByTripId({});
         setHousingByTripId({});
+        setHydrationOk(true);
         setIsHydrated(true);
         return;
       }
 
       setIsHydrated(false);
+      setHydrationOk(false);
       try {
         const { data, error } = await supabase
           .from('user_data')
@@ -222,7 +227,9 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
         setHousingByTripId(
           parsed.housingByTripId && typeof parsed.housingByTripId === 'object' ? parsed.housingByTripId : {}
         );
+        if (!cancelled) setHydrationOk(true);
       } catch {
+        // Do NOT set hydrationOk — prevents persist from overwriting DB with empty state
         if (cancelled) return;
         setTrips([]);
         setFlightsByTripId({});
@@ -244,7 +251,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
 
   useEffect(() => {
     if (!userKey) return;
-    if (!isHydrated) return;
+    if (!hydrationOk) return;
 
     const persist = async () => {
       const nextState: PersistedTripsState = {
@@ -261,7 +268,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
     };
 
     persist();
-  }, [expensesByTripId, flightsByTripId, housingByTripId, itineraryByTripId, isHydrated, journalByTripId, trips, userKey]);
+  }, [expensesByTripId, flightsByTripId, housingByTripId, hydrationOk, itineraryByTripId, journalByTripId, trips, userKey]);
 
   const value = useMemo<TripsContextValue>(() => {
     const addTrip: TripsContextValue['addTrip'] = (trip) => {
