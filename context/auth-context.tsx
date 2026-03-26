@@ -6,7 +6,6 @@ import { supabase } from '@/config/supabase';
 interface AuthContextValue {
   user: User | null;
   uid: string | null;
-  phoneNumber: string | null;
   isLoading: boolean;
   signOut: () => Promise<void>;
 }
@@ -19,9 +18,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const upsertProfile = async (user: User) => {
-      if (!user.phone) return;
+      const email = user.email ?? user.user_metadata?.email ?? null;
       await supabase.from('profiles').upsert(
-        { id: user.id, phone: user.phone },
+        { id: user.id, email },
         { onConflict: 'id' }
       );
     };
@@ -41,27 +40,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
-  const value = useMemo<AuthContextValue>(() => {
-    const signOut: AuthContextValue['signOut'] = async () => {
-      await supabase.auth.signOut();
-    };
-
-    return {
-      user,
-      uid: user?.id ?? null,
-      phoneNumber: user?.phone ?? null,
-      isLoading,
-      signOut,
-    };
-  }, [isLoading, user]);
+  const value = useMemo<AuthContextValue>(() => ({
+    user,
+    uid: user?.id ?? null,
+    isLoading,
+    signOut: async () => { await supabase.auth.signOut(); },
+  }), [isLoading, user]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
   const ctx = useContext(AuthContext);
-  if (!ctx) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
+  if (!ctx) throw new Error('useAuth must be used within an AuthProvider');
   return ctx;
 }

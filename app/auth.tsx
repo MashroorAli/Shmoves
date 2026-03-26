@@ -1,3 +1,4 @@
+import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -22,31 +23,32 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { supabase } from '@/config/supabase';
 
 const OTP_LENGTH = 6;
-
-type Step = 'phone' | 'otp';
+type Step = 'home' | 'email' | 'otp';
 
 export default function AuthScreen() {
   const theme = useColorScheme() ?? 'light';
   const colors = Colors[theme];
   const insets = useSafeAreaInsets();
 
-  const [step, setStep] = useState<Step>('phone');
-  const [phoneNumber, setPhoneNumber] = useState('');
+  const [step, setStep] = useState<Step>('home');
+  const [email, setEmail] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [otpFocused, setOtpFocused] = useState(false);
 
-  const phoneInputRef = useRef<TextInput>(null);
+  const emailInputRef = useRef<TextInput>(null);
   const otpInputRef = useRef<TextInput>(null);
 
   // Mount animation
   const heroOpacity = useRef(new Animated.Value(0)).current;
   const heroTranslateY = useRef(new Animated.Value(24)).current;
 
-  // Step transition animations
-  const phoneOpacity = useRef(new Animated.Value(1)).current;
-  const phoneTranslateX = useRef(new Animated.Value(0)).current;
+  // Step panel animations
+  const homeOpacity = useRef(new Animated.Value(1)).current;
+  const homeTranslateX = useRef(new Animated.Value(0)).current;
+  const emailOpacity = useRef(new Animated.Value(0)).current;
+  const emailTranslateX = useRef(new Animated.Value(60)).current;
   const otpOpacity = useRef(new Animated.Value(0)).current;
   const otpTranslateX = useRef(new Animated.Value(60)).current;
 
@@ -62,7 +64,6 @@ export default function AuthScreen() {
       Animated.timing(heroTranslateY, { toValue: 0, duration: 700, useNativeDriver: true }),
     ]).start();
 
-    // Cursor blink loop
     const blink = Animated.loop(
       Animated.sequence([
         Animated.timing(cursorOpacity, { toValue: 0, duration: 500, useNativeDriver: true }),
@@ -73,76 +74,107 @@ export default function AuthScreen() {
     return () => blink.stop();
   }, []);
 
-  const goToOtp = () => {
+  const transitionTo = (next: Step) => {
+    const currentOpacity = step === 'home' ? homeOpacity : step === 'email' ? emailOpacity : otpOpacity;
+    const currentX = step === 'home' ? homeTranslateX : step === 'email' ? emailTranslateX : otpTranslateX;
+    const nextOpacity = next === 'home' ? homeOpacity : next === 'email' ? emailOpacity : otpOpacity;
+    const nextX = next === 'home' ? homeTranslateX : next === 'email' ? emailTranslateX : otpTranslateX;
+
     Animated.parallel([
-      Animated.timing(phoneOpacity, { toValue: 0, duration: 220, useNativeDriver: true }),
-      Animated.timing(phoneTranslateX, { toValue: -60, duration: 220, useNativeDriver: true }),
+      Animated.timing(currentOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
+      Animated.timing(currentX, { toValue: -60, duration: 200, useNativeDriver: true }),
     ]).start(() => {
-      setStep('otp');
+      nextX.setValue(60);
+      setStep(next);
       Animated.parallel([
-        Animated.timing(otpOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
-        Animated.timing(otpTranslateX, { toValue: 0, duration: 260, useNativeDriver: true }),
+        Animated.timing(nextOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
+        Animated.timing(nextX, { toValue: 0, duration: 260, useNativeDriver: true }),
       ]).start(() => {
-        otpInputRef.current?.focus();
+        if (next === 'email') emailInputRef.current?.focus();
+        if (next === 'otp') otpInputRef.current?.focus();
       });
     });
   };
 
-  const goToPhone = () => {
+  const goBack = () => {
+    const prev = step === 'otp' ? 'email' : 'home';
+    const currentOpacity = step === 'otp' ? otpOpacity : emailOpacity;
+    const currentX = step === 'otp' ? otpTranslateX : emailTranslateX;
+    const prevOpacity = prev === 'home' ? homeOpacity : emailOpacity;
+    const prevX = prev === 'home' ? homeTranslateX : emailTranslateX;
+
     Animated.parallel([
-      Animated.timing(otpOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
-      Animated.timing(otpTranslateX, { toValue: 60, duration: 200, useNativeDriver: true }),
+      Animated.timing(currentOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
+      Animated.timing(currentX, { toValue: 60, duration: 200, useNativeDriver: true }),
     ]).start(() => {
-      setStep('phone');
-      setOtpCode('');
+      prevX.setValue(-60);
+      setStep(prev);
       setError(null);
-      otpTranslateX.setValue(60);
-      phoneTranslateX.setValue(0);
       Animated.parallel([
-        Animated.timing(phoneOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
-        Animated.timing(phoneTranslateX, { toValue: 0, duration: 260, useNativeDriver: true }),
-      ]).start(() => {
-        phoneInputRef.current?.focus();
-      });
+        Animated.timing(prevOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
+        Animated.timing(prevX, { toValue: 0, duration: 260, useNativeDriver: true }),
+      ]).start();
     });
   };
 
-  const pressIn = () => {
+  const pressIn = () =>
     Animated.spring(buttonScale, { toValue: 0.96, useNativeDriver: true, speed: 50 }).start();
-  };
-
-  const pressOut = () => {
+  const pressOut = () =>
     Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true, speed: 50 }).start();
+
+  // ── Apple Sign In ────────────────────────────────────────────────────────
+  const signInWithApple = async () => {
+    setError(null);
+    setLoading(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+      const { error: err } = await supabase.auth.signInWithIdToken({
+        provider: 'apple',
+        token: credential.identityToken!,
+      });
+      if (err) throw err;
+    } catch (e: any) {
+      if (e?.code !== 'ERR_REQUEST_CANCELED') {
+        setError(e?.message || 'Apple Sign In failed. Please try again.');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const normalizePhone = (raw: string) => {
-    const trimmed = raw.trim();
-    if (trimmed.startsWith('+')) return trimmed;
-    return `+1${trimmed.replace(/\D/g, '')}`;
-  };
-
-  const sendCode = useCallback(async () => {
-    const digits = phoneNumber.replace(/\D/g, '');
-    if (digits.length < 10) {
-      setError('Enter a valid phone number.');
+  // ── Email OTP ────────────────────────────────────────────────────────────
+  const sendEmailCode = useCallback(async () => {
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed.includes('@') || !trimmed.includes('.')) {
+      setError('Enter a valid email address.');
       return;
     }
     setError(null);
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const { error: err } = await supabase.auth.signInWithOtp({ phone: normalizePhone(phoneNumber) });
+      const { error: err } = await supabase.auth.signInWithOtp({
+        email: trimmed,
+        options: { shouldCreateUser: true },
+      });
       if (err) throw err;
-      goToOtp();
+      transitionTo('otp');
     } catch (e: any) {
       setError(e?.message || 'Failed to send code.');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setLoading(false);
     }
-  }, [phoneNumber]);
+  }, [email]);
 
-  const verifyCode = useCallback(async () => {
+  const verifyEmailCode = useCallback(async () => {
     if (otpCode.length < OTP_LENGTH) {
       setError('Enter the full 6-digit code.');
       return;
@@ -152,9 +184,9 @@ export default function AuthScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
       const { error: err } = await supabase.auth.verifyOtp({
-        phone: normalizePhone(phoneNumber),
+        email: email.trim().toLowerCase(),
         token: otpCode,
-        type: 'sms',
+        type: 'email',
       });
       if (err) throw err;
     } catch (e: any) {
@@ -163,28 +195,25 @@ export default function AuthScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setLoading(false);
     }
-  }, [phoneNumber, otpCode]);
+  }, [email, otpCode]);
 
-  // Auto-verify when all 6 digits entered
   useEffect(() => {
-    if (otpCode.length === OTP_LENGTH) {
-      verifyCode();
-    }
+    if (otpCode.length === OTP_LENGTH) verifyEmailCode();
   }, [otpCode]);
 
-  const maskedPhone = phoneNumber.replace(/\D/g, '').slice(-4);
+  const maskedEmail = email.includes('@')
+    ? `${email.split('@')[0].slice(0, 2)}***@${email.split('@')[1]}`
+    : '';
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
       <View style={[styles.root, { backgroundColor: colors.background }]}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.flex}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
 
-          {/* Back button — only on OTP step */}
+          {/* Back button */}
           <View style={[styles.backRow, { paddingTop: insets.top + 12 }]}>
-            {step === 'otp' ? (
-              <Pressable onPress={goToPhone} hitSlop={16} style={styles.backButton}>
+            {step !== 'home' ? (
+              <Pressable onPress={goBack} hitSlop={16} style={styles.backButton}>
                 <ThemedText style={[styles.backText, { color: colors.primary }]}>← Back</ThemedText>
               </Pressable>
             ) : null}
@@ -204,39 +233,90 @@ export default function AuthScreen() {
           {/* Content area */}
           <View style={styles.contentArea}>
 
-            {/* ── Phone step ── */}
+            {/* ── Home step: Apple + Email options ── */}
             <Animated.View
-              pointerEvents={step === 'phone' ? 'auto' : 'none'}
+              pointerEvents={step === 'home' ? 'auto' : 'none'}
               style={[
                 styles.stepPanel,
                 {
-                  opacity: phoneOpacity,
-                  transform: [{ translateX: phoneTranslateX }],
-                  position: step === 'otp' ? 'absolute' : 'relative',
+                  opacity: homeOpacity,
+                  transform: [{ translateX: homeTranslateX }],
+                  position: step !== 'home' ? 'absolute' : 'relative',
                 },
               ]}>
               <ThemedText style={[styles.stepHeading, { color: colors.text }]}>
-                What's your number?
+                Welcome.
               </ThemedText>
               <ThemedText style={[styles.stepSub, { color: colors.icon }]}>
-                We'll text you a one-time code to sign in.
+                Sign in or create an account to start planning.
+              </ThemedText>
+
+              <View style={styles.authOptions}>
+                {/* Apple Sign In */}
+                <AppleAuthentication.AppleAuthenticationButton
+                  buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                  buttonStyle={theme === 'dark'
+                    ? AppleAuthentication.AppleAuthenticationButtonStyle.WHITE
+                    : AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                  cornerRadius={14}
+                  style={styles.appleButton}
+                  onPress={signInWithApple}
+                />
+
+                {/* Divider */}
+                <View style={styles.dividerRow}>
+                  <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
+                  <ThemedText style={[styles.dividerText, { color: colors.icon }]}>or</ThemedText>
+                  <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
+                </View>
+
+                {/* Email option */}
+                <Pressable
+                  style={[styles.emailButton, { borderColor: colors.border }]}
+                  onPress={() => transitionTo('email')}>
+                  <ThemedText style={[styles.emailButtonText, { color: colors.text }]}>
+                    Continue with Email
+                  </ThemedText>
+                </Pressable>
+              </View>
+
+              {error ? <ThemedText style={styles.errorText}>{error}</ThemedText> : null}
+            </Animated.View>
+
+            {/* ── Email step ── */}
+            <Animated.View
+              pointerEvents={step === 'email' ? 'auto' : 'none'}
+              style={[
+                styles.stepPanel,
+                {
+                  opacity: emailOpacity,
+                  transform: [{ translateX: emailTranslateX }],
+                  position: step !== 'email' ? 'absolute' : 'relative',
+                },
+              ]}>
+              <ThemedText style={[styles.stepHeading, { color: colors.text }]}>
+                What's your email?
+              </ThemedText>
+              <ThemedText style={[styles.stepSub, { color: colors.icon }]}>
+                We'll send you a one-time code to sign in.
               </ThemedText>
 
               <TextInput
-                ref={phoneInputRef}
-                value={phoneNumber}
-                onChangeText={setPhoneNumber}
-                placeholder="+1 (555) 123-4567"
+                ref={emailInputRef}
+                value={email}
+                onChangeText={setEmail}
+                placeholder="you@example.com"
                 placeholderTextColor={colors.icon}
-                keyboardType="phone-pad"
-                autoComplete="tel"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoComplete="email"
                 editable={!loading}
                 returnKeyType="done"
-                onSubmitEditing={sendCode}
-                style={[styles.phoneInput, { borderBottomColor: colors.border, color: colors.inputText }]}
+                onSubmitEditing={sendEmailCode}
+                style={[styles.emailInput, { borderBottomColor: colors.border, color: colors.inputText }]}
               />
 
-              {error && step === 'phone' ? (
+              {error && step === 'email' ? (
                 <ThemedText style={styles.errorText}>{error}</ThemedText>
               ) : null}
             </Animated.View>
@@ -249,17 +329,16 @@ export default function AuthScreen() {
                 {
                   opacity: otpOpacity,
                   transform: [{ translateX: otpTranslateX }],
-                  position: step === 'phone' ? 'absolute' : 'relative',
+                  position: step !== 'otp' ? 'absolute' : 'relative',
                 },
               ]}>
               <ThemedText style={[styles.stepHeading, { color: colors.text }]}>
-                Check your{'\n'}messages.
+                Check your{'\n'}inbox.
               </ThemedText>
               <ThemedText style={[styles.stepSub, { color: colors.icon }]}>
-                Code sent to ···· {maskedPhone}
+                Code sent to {maskedEmail}
               </ThemedText>
 
-              {/* Hidden input that captures OTP */}
               <TextInput
                 ref={otpInputRef}
                 value={otpCode}
@@ -272,7 +351,6 @@ export default function AuthScreen() {
                 editable={!loading}
               />
 
-              {/* 6 digit display boxes */}
               <Pressable onPress={() => otpInputRef.current?.focus()} style={styles.otpRow}>
                 {Array.from({ length: OTP_LENGTH }).map((_, i) => {
                   const digit = otpCode[i] ?? '';
@@ -285,7 +363,9 @@ export default function AuthScreen() {
                         styles.otpBox,
                         {
                           borderColor: isActive ? colors.primary : isFilled ? colors.text : colors.border,
-                          backgroundColor: isFilled ? (theme === 'dark' ? colors.surfaceMuted : '#f7f7f7') : 'transparent',
+                          backgroundColor: isFilled
+                            ? theme === 'dark' ? colors.surfaceMuted : '#f7f7f7'
+                            : 'transparent',
                         },
                       ]}>
                       {digit ? (
@@ -308,31 +388,33 @@ export default function AuthScreen() {
 
           {/* Bottom actions */}
           <View style={[styles.bottomArea, { paddingBottom: insets.bottom + 24 }]}>
-            <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
-              <Pressable
-                style={[styles.pill, { backgroundColor: colors.primary }]}
-                onPressIn={pressIn}
-                onPressOut={pressOut}
-                onPress={step === 'phone' ? sendCode : verifyCode}
-                disabled={loading}>
-                {loading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <ThemedText style={styles.pillText}>
-                    {step === 'phone' ? 'Continue' : 'Verify'} →
-                  </ThemedText>
-                )}
-              </Pressable>
-            </Animated.View>
+            {step === 'email' && (
+              <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
+                <Pressable
+                  style={[styles.pill, { backgroundColor: colors.primary }]}
+                  onPressIn={pressIn}
+                  onPressOut={pressOut}
+                  onPress={sendEmailCode}
+                  disabled={loading}>
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <ThemedText style={styles.pillText}>Send Code →</ThemedText>
+                  )}
+                </Pressable>
+              </Animated.View>
+            )}
 
-            {step === 'otp' ? (
-              <Pressable onPress={sendCode} disabled={loading} hitSlop={12}>
+            {step === 'otp' && (
+              <Pressable onPress={sendEmailCode} disabled={loading} hitSlop={12}>
                 <ThemedText style={[styles.resendText, { color: colors.icon }]}>
                   Didn't get a code?{' '}
                   <ThemedText style={[styles.resendText, { color: colors.primary }]}>Resend</ThemedText>
                 </ThemedText>
               </Pressable>
-            ) : (
+            )}
+
+            {step === 'home' && (
               <ThemedText style={[styles.disclaimer, { color: colors.icon }]}>
                 By continuing you agree to our{' '}
                 <ThemedText
@@ -358,24 +440,15 @@ export default function AuthScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-  },
-  flex: {
-    flex: 1,
-  },
+  root: { flex: 1 },
+  flex: { flex: 1 },
   backRow: {
     paddingHorizontal: 28,
     height: 52,
     justifyContent: 'center',
   },
-  backButton: {
-    alignSelf: 'flex-start',
-  },
-  backText: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
+  backButton: { alignSelf: 'flex-start' },
+  backText: { fontSize: 16, fontWeight: '600' },
   hero: {
     alignItems: 'center',
     paddingTop: 24,
@@ -412,7 +485,39 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     marginBottom: 8,
   },
-  phoneInput: {
+  authOptions: {
+    gap: 12,
+    marginTop: 8,
+  },
+  appleButton: {
+    width: '100%',
+    height: 52,
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginVertical: 4,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+  },
+  dividerText: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  emailButton: {
+    borderWidth: 1.5,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  emailButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  emailInput: {
     fontSize: 22,
     fontWeight: '500',
     borderBottomWidth: 1.5,
@@ -439,15 +544,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  otpDigit: {
-    fontSize: 22,
-    fontWeight: '700',
-  },
-  cursor: {
-    width: 2,
-    height: 24,
-    borderRadius: 1,
-  },
+  otpDigit: { fontSize: 22, fontWeight: '700' },
+  cursor: { width: 2, height: 24, borderRadius: 1 },
   errorText: {
     color: '#D12C2C',
     fontSize: 13,
@@ -472,16 +570,8 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 6,
   },
-  pillText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '700',
-    letterSpacing: 0.2,
-  },
-  resendText: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
+  pillText: { color: '#fff', fontSize: 17, fontWeight: '700', letterSpacing: 0.2 },
+  resendText: { fontSize: 14, fontWeight: '500' },
   disclaimer: {
     fontSize: 12,
     textAlign: 'center',
