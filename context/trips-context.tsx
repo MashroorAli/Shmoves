@@ -183,6 +183,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
           setExpensesByTripId({});
           setJournalByTripId({});
           setHousingByTripId({});
+          if (!cancelled) setHydrationOk(true);
           return;
         }
 

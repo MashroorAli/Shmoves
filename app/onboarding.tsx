@@ -319,9 +319,8 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   heading: {
-    fontSize: 32,
+    fontSize: 30,
     fontWeight: '800',
-    letterSpacing: -0.4,
   },
   subtext: {
     fontSize: 15,

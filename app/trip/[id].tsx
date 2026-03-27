@@ -3,7 +3,7 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import { useFocusEffect } from '@react-navigation/native';
 import { Image as ExpoImage } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Contacts from 'expo-contacts';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
@@ -309,38 +309,65 @@ export default function TripDetailsScreen() {
   const tipBubbleOpacity = useRef(new Animated.Value(0)).current;
   const tipContentOpacity = useRef(new Animated.Value(1)).current;
   const tipBackdropOpacity = useRef(new Animated.Value(0)).current;
+  // Spotlight morph animated values (JS driver for layout props)
+  const spotCx = useRef(new Animated.Value(0)).current;
+  const spotCy = useRef(new Animated.Value(0)).current;
+  const spotRAnim = useRef(new Animated.Value(0)).current;
+  // Derived animated nodes for spotlight geometry
+  const spotCxMinusR = useMemo(() => Animated.subtract(spotCx, spotRAnim), []);
+  const spotCyMinusR = useMemo(() => Animated.subtract(spotCy, spotRAnim), []);
+  const spotCxPlusR = useMemo(() => Animated.add(spotCx, spotRAnim), []);
+  const spotCyPlusR = useMemo(() => Animated.add(spotCy, spotRAnim), []);
+  const spotDiameter = useMemo(() => Animated.multiply(spotRAnim, 2), []);
   // Help button pulse ring
   const helpPulseScale = useRef(new Animated.Value(1)).current;
   const helpPulseOpacity = useRef(new Animated.Value(0)).current;
 
+  const getTipRef = (target: string | undefined) =>
+    target === 'pencil' ? pencilButtonRef
+    : target === 'help' ? helpButtonRef
+    : target === 'dayCards' ? dayCardsRef
+    : null;
+
+  const getSpotR = (target: string | undefined, w: number, h: number) => {
+    if (target === 'dayCards') return 0; // No spotlight hole — fully dark overlay
+    const pad = 10;
+    return Math.max(w, h) / 2 + pad;
+  };
+
   useEffect(() => {
     if (!showItineraryTips) {
-      // Dismiss animation
+      // Dismiss: shrink spotlight + fade everything, then unmount
       Animated.parallel([
         Animated.timing(tipBubbleOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
-        Animated.timing(tipBackdropOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
         Animated.spring(tipBubbleScale, { toValue: 0.88, useNativeDriver: true, speed: 40, bounciness: 0 }),
-      ]).start();
-      setTipAnchor(null);
+        Animated.timing(spotRAnim, { toValue: 0, duration: 220, useNativeDriver: false }),
+        Animated.timing(tipBackdropOpacity, { toValue: 0, duration: 220, useNativeDriver: false }),
+      ]).start(() => setTipAnchor(null));
       return;
     }
     const tip = ITINERARY_TIPS[itineraryTipIndex];
-    const ref =
-      tip?.target === 'pencil' ? pencilButtonRef
-      : tip?.target === 'help' ? helpButtonRef
-      : tip?.target === 'dayCards' ? dayCardsRef
-      : null;
+    const ref = getTipRef(tip?.target);
     if (ref?.current) {
       setTimeout(() => {
         ref.current?.measureInWindow((x, y, w, h) => {
-          setTipAnchor({ x, y, w, h });
-          // Entrance animation
+          const cx = x + w / 2, cy = y + h / 2;
+          const r = getSpotR(tip?.target, w, h);
+          // Position spotlight at target with hole closed (r=0 → fully dark)
+          spotCx.setValue(cx);
+          spotCy.setValue(cy);
+          spotRAnim.setValue(0);
+          tipBackdropOpacity.setValue(0);
+          tipContentOpacity.setValue(1);
           tipBubbleScale.setValue(0.88);
           tipBubbleOpacity.setValue(0);
+          setTipAnchor({ x, y, w, h });
+          // Animate: overlay fades in, spotlight hole opens, bubble pops in
           Animated.parallel([
+            Animated.timing(tipBackdropOpacity, { toValue: 1, duration: 260, useNativeDriver: false }),
+            Animated.spring(spotRAnim, { toValue: r, useNativeDriver: false, speed: 18, bounciness: 4 }),
             Animated.spring(tipBubbleScale, { toValue: 1, useNativeDriver: true, speed: 28, bounciness: 6 }),
             Animated.timing(tipBubbleOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
-            Animated.timing(tipBackdropOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
           ]).start();
         });
       }, 50);
@@ -349,25 +376,35 @@ export default function TripDetailsScreen() {
     }
   }, [showItineraryTips]);
 
-  // Crossfade tip content when index changes (but only after first show)
+  // Morph spotlight between tips: bubble fades out → spotlight morphs → bubble fades in at new position
   useEffect(() => {
     if (!showItineraryTips) return;
-    tipContentOpacity.setValue(0);
-    const tip = ITINERARY_TIPS[itineraryTipIndex];
-    const ref =
-      tip?.target === 'pencil' ? pencilButtonRef
-      : tip?.target === 'help' ? helpButtonRef
-      : tip?.target === 'dayCards' ? dayCardsRef
-      : null;
-    if (ref?.current) {
-      setTimeout(() => {
-        ref.current?.measureInWindow((x, y, w, h) => {
-          setTipAnchor({ x, y, w, h });
-          Animated.timing(tipContentOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
-        });
-      }, 50);
-    }
-    Animated.timing(tipContentOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+    // Fade bubble out first
+    Animated.timing(tipBubbleOpacity, { toValue: 0, duration: 100, useNativeDriver: true }).start(() => {
+      const tip = ITINERARY_TIPS[itineraryTipIndex];
+      const ref = getTipRef(tip?.target);
+      if (!ref?.current) return;
+      ref.current.measureInWindow((x, y, w, h) => {
+        const cx = x + w / 2, cy = y + h / 2;
+        const r = getSpotR(tip?.target, w, h);
+        setTipAnchor({ x, y, w, h });
+        tipContentOpacity.setValue(1);
+        // Morph spotlight to new position
+        Animated.parallel([
+          Animated.spring(spotCx, { toValue: cx, useNativeDriver: false, speed: 14, bounciness: 3 }),
+          Animated.spring(spotCy, { toValue: cy, useNativeDriver: false, speed: 14, bounciness: 3 }),
+          Animated.spring(spotRAnim, { toValue: r, useNativeDriver: false, speed: 14, bounciness: 3 }),
+        ]).start();
+        // Pop bubble back in at new position (slight delay for morph to start)
+        setTimeout(() => {
+          tipBubbleScale.setValue(0.92);
+          Animated.parallel([
+            Animated.timing(tipBubbleOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
+            Animated.spring(tipBubbleScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 5 }),
+          ]).start();
+        }, 80);
+      });
+    });
   }, [itineraryTipIndex]);
 
   // Help button pulse loop — runs while itinerary tab is active and tips haven't been seen
@@ -3513,24 +3550,41 @@ export default function TripDetailsScreen() {
           arrowLeft = tipAnchor.x + tipAnchor.w / 2 - bubbleMargin - 10;
         }
 
+        const advanceTip = () => {
+          if (itineraryTipIndex < ITINERARY_TIPS.length - 1) {
+            setItineraryTipIndex((i) => i + 1);
+          } else {
+            setShowItineraryTips(false);
+            setItineraryTipIndex(0);
+          }
+        };
+        const DARK = 'rgba(0,0,0,0.62)';
+
         return (
-          <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-            {/* Animated backdrop */}
-            <Animated.View
-              style={[StyleSheet.absoluteFill, styles.tipOverlayBackdrop, { opacity: tipBackdropOpacity }]}
-              pointerEvents={showItineraryTips ? 'auto' : 'none'}>
-              <Pressable
-                style={StyleSheet.absoluteFill}
-                onPress={() => {
-                  if (itineraryTipIndex < ITINERARY_TIPS.length - 1) {
-                    setItineraryTipIndex((i) => i + 1);
-                  } else {
-                    setShowItineraryTips(false);
-                    setItineraryTipIndex(0);
-                  }
-                }}
-              />
+          <View style={[StyleSheet.absoluteFill, { zIndex: 9999 }]} pointerEvents="box-none">
+            {/* Morphing circular spotlight: 4 rects + 4 corners, all driven by animated values */}
+            <Animated.View style={[StyleSheet.absoluteFill, { opacity: tipBackdropOpacity }]} pointerEvents="none">
+              {/* Top */}
+              <Animated.View style={{ position: 'absolute', left: 0, right: 0, top: 0, height: spotCyMinusR, backgroundColor: DARK }} />
+              {/* Left */}
+              <Animated.View style={{ position: 'absolute', left: 0, width: spotCxMinusR, top: spotCyMinusR, height: spotDiameter, backgroundColor: DARK }} />
+              {/* Right */}
+              <Animated.View style={{ position: 'absolute', left: spotCxPlusR, width: 2000, top: spotCyMinusR, height: spotDiameter, backgroundColor: DARK }} />
+              {/* Bottom */}
+              <Animated.View style={{ position: 'absolute', left: 0, right: 0, top: spotCyPlusR, height: 2000, backgroundColor: DARK }} />
+              {/* Corner TL */}
+              <Animated.View style={{ position: 'absolute', left: spotCxMinusR, top: spotCyMinusR, width: spotRAnim, height: spotRAnim, backgroundColor: DARK, borderBottomRightRadius: spotRAnim }} />
+              {/* Corner TR */}
+              <Animated.View style={{ position: 'absolute', left: spotCx, top: spotCyMinusR, width: spotRAnim, height: spotRAnim, backgroundColor: DARK, borderBottomLeftRadius: spotRAnim }} />
+              {/* Corner BL */}
+              <Animated.View style={{ position: 'absolute', left: spotCxMinusR, top: spotCy, width: spotRAnim, height: spotRAnim, backgroundColor: DARK, borderTopRightRadius: spotRAnim }} />
+              {/* Corner BR */}
+              <Animated.View style={{ position: 'absolute', left: spotCx, top: spotCy, width: spotRAnim, height: spotRAnim, backgroundColor: DARK, borderTopLeftRadius: spotRAnim }} />
+              {/* Purple ring */}
+              <Animated.View style={{ position: 'absolute', left: spotCxMinusR, top: spotCyMinusR, width: spotDiameter, height: spotDiameter, borderRadius: spotRAnim, borderWidth: 2.5, borderColor: colors.primary }} />
             </Animated.View>
+            {/* Tap anywhere to advance */}
+            <Pressable style={StyleSheet.absoluteFill} onPress={advanceTip} />
 
             {/* Animated bubble */}
             <Animated.View
