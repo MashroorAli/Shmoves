@@ -46,6 +46,7 @@ type CachedHeroImages = {
 type TripPerson = {
   id: string;
   name: string;
+  avatarUri?: string;
 };
 
 // ─── SwipeableDayCard ────────────────────────────────────────────────────────
@@ -242,7 +243,7 @@ export default function TripDetailsScreen() {
     addHousing,
     deleteHousing,
   } = useTrips();
-  const [activeTab, setActiveTab] = useState<'overview' | 'itinerary' | 'finances' | 'journal' | 'photos'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'itinerary' | 'finances' | 'photos' | 'feed'>('overview');
 
   const sharedTrip = sharedTrips.find(
     (st) => st.trip.id === id || st.id === id,
@@ -678,6 +679,7 @@ export default function TripDetailsScreen() {
         .map((m) => ({
           id: m.userId,
           name: m.displayName || m.phone || '?',
+          avatarUri: m.avatarUri,
         }))
     : [{ id: uid ?? 'me', name: 'Me' }];
 
@@ -1622,8 +1624,8 @@ export default function TripDetailsScreen() {
     { key: 'overview' as const, label: 'Overview' },
     { key: 'itinerary' as const, label: 'Itinerary' },
     { key: 'finances' as const, label: 'Finances' },
-    { key: 'journal' as const, label: 'Journal' },
     { key: 'photos' as const, label: 'Photos' },
+    { key: 'feed' as const, label: 'Feed' },
   ];
 
   const renderTabContent = () => {
@@ -2458,7 +2460,12 @@ export default function TripDetailsScreen() {
               <View ref={dayCardsRef} collapsable={false}>
               <ThemedView style={styles.itineraryContainer}>
                 {itineraryDays.length > 0 ? (
-                  itineraryDays.map((day) => {
+                  [...itineraryDays].sort((a, b) => {
+                    if (!a.date && !b.date) return 0;
+                    if (!a.date) return 1;
+                    if (!b.date) return -1;
+                    return a.date.localeCompare(b.date);
+                  }).map((day) => {
                     const isExpanded = expandedDayIds.has(day.id);
                     return (
                       <SwipeableDayCard
@@ -2724,6 +2731,10 @@ export default function TripDetailsScreen() {
                         }
 
                         const dateArg = dayDatePickerVisible ? toLocalIsoDate(dayDateDraft) : undefined;
+                        if (dateArg && itineraryDays.some((d) => d.date === dateArg)) {
+                          Alert.alert('Day already exists', 'A day for this date has already been added.');
+                          return;
+                        }
                         const day = addItineraryDay(tripId, label, dateArg);
                         setDayModalVisible(false);
                         setDayName('');
@@ -3101,159 +3112,44 @@ export default function TripDetailsScreen() {
             </Modal>
           </ThemedView>
         );
-      case 'journal':
+      case 'feed':
         return (
           <ThemedView style={styles.tabContent}>
-            <ThemedText style={styles.sectionTitle}>Journal</ThemedText>
-
-            {(() => {
-              // For shared trips, filter: show own entries + entries marked as shared
-              const visibleEntries = sharedTrip
-                ? journalEntries.filter((e) => e.authorId === uid || e.isShared)
-                : journalEntries;
-              return visibleEntries.length > 0 ? (
+            <ThemedText style={styles.sectionTitle}>Feed</ThemedText>
+            {sharedTrip && sharedTrip.feed?.length > 0 ? (
               <ThemedView style={styles.journalList}>
-                {visibleEntries.map((entry) => (
-                  <Pressable
-                    key={entry.id}
-                    style={[styles.journalCard, { borderColor: colors.border, backgroundColor: colors.surface }]}
-                    onPress={() => {
-                      if (!editMode) return;
-                      openJournalModal({ id: entry.id, date: entry.date, text: entry.text, isShared: entry.isShared });
-                    }}>
-                    <View style={styles.journalHeaderRow}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        <ThemedText style={styles.journalDate}>{entry.date}</ThemedText>
-                        {sharedTrip ? (
-                          <IconSymbol
-                            name={entry.isShared ? 'globe' : 'lock.fill'}
-                            size={12}
-                            color={colors.icon}
-                          />
-                        ) : null}
+                {sharedTrip.feed.map((entry) => {
+                  const actor = sharedTrip.members.find((m) => m.userId === entry.actorId);
+                  const actorName = actor?.displayName || actor?.phone || 'Someone';
+                  const timeAgo = (() => {
+                    const diff = Date.now() - new Date(entry.timestamp).getTime();
+                    const mins = Math.floor(diff / 60000);
+                    if (mins < 1) return 'just now';
+                    if (mins < 60) return `${mins}m ago`;
+                    const hrs = Math.floor(mins / 60);
+                    if (hrs < 24) return `${hrs}h ago`;
+                    return `${Math.floor(hrs / 24)}d ago`;
+                  })();
+                  return (
+                    <View key={entry.id} style={[styles.journalCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+                      <View style={styles.journalHeaderRow}>
+                        <ThemedText style={[styles.journalDate, { color: colors.text }]}>
+                          <ThemedText style={{ fontWeight: '700' }}>{actorName}</ThemedText>
+                          {` ${entry.action} `}
+                          <ThemedText style={{ color: colors.primary }}>{entry.section}</ThemedText>
+                          {entry.detail ? `: ${entry.detail}` : ''}
+                        </ThemedText>
+                        <ThemedText style={[styles.journalDate, { color: colors.icon }]}>{timeAgo}</ThemedText>
                       </View>
-                      {editMode ? (
-                        <View style={styles.inlineActionsRow}>
-                          <Pressable
-                            style={styles.inlineActionButton}
-                            onPress={() => openJournalModal({ id: entry.id, date: entry.date, text: entry.text, isShared: entry.isShared })}>
-                            <ThemedText style={[styles.inlineActionText, { color: colors.primary }]}>Edit</ThemedText>
-                          </Pressable>
-                          <Pressable
-                            style={styles.inlineActionButton}
-                            onPress={() => {
-                              if (!tripId) return;
-                              Alert.alert('Delete entry?', 'This cannot be undone.', [
-                                { text: 'Cancel', style: 'cancel' },
-                                {
-                                  text: 'Delete',
-                                  style: 'destructive',
-                                  onPress: () => deleteJournalEntry(tripId, entry.id),
-                                },
-                              ]);
-                            }}>
-                            <ThemedText
-                              style={[styles.inlineActionText, styles.destructiveText, { color: colors.destructive }]}
-                            >
-                              Delete
-                            </ThemedText>
-                          </Pressable>
-                        </View>
-                      ) : null}
                     </View>
-                    <ThemedText style={styles.journalText}>{entry.text}</ThemedText>
-                  </Pressable>
-                ))}
+                  );
+                })}
               </ThemedView>
             ) : (
-              <ThemedText style={styles.emptyText}>No journal entries yet.</ThemedText>
-            );
-            })()}
-
-            <Modal visible={journalModalVisible} transparent animationType="fade">
-              <View style={styles.modalOverlay}>
-                <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
-                  <ThemedText style={styles.modalTitle}>{editingJournalEntryId ? 'Edit Entry' : 'Add Entry'}</ThemedText>
-                  <ThemedText style={styles.modalSubtitle}>{journalDate}</ThemedText>
-
-                  <TextInput
-                    value={journalText}
-                    onChangeText={setJournalText}
-                    placeholder="Write something..."
-                    placeholderTextColor="#888"
-                    multiline
-                    style={[
-                      styles.modalInput,
-                      styles.modalMultilineInput,
-                      { borderColor: colors.border, color: colors.inputText },
-                    ]}
-                  />
-
-                  {sharedTrip ? (
-                    <View style={styles.journalShareRow}>
-                      <View style={{ flex: 1 }}>
-                        <ThemedText style={{ fontSize: 14, fontWeight: '600', color: colors.text }}>
-                          Share with trip
-                        </ThemedText>
-                        <ThemedText style={{ fontSize: 12, color: colors.icon }}>
-                          {journalIsShared ? 'Everyone on this trip can see this entry' : 'Only you can see this entry'}
-                        </ThemedText>
-                      </View>
-                      <Switch
-                        value={journalIsShared}
-                        onValueChange={setJournalIsShared}
-                        trackColor={{ false: colors.border, true: colors.primary }}
-                      />
-                    </View>
-                  ) : null}
-
-                  {journalError ? <ThemedText style={styles.modalErrorText}>{journalError}</ThemedText> : null}
-
-                  <View style={styles.modalActions}>
-                    <Pressable
-                      style={[styles.modalButton, { borderColor: colors.border }]}
-                      onPress={() => {
-                        setJournalModalVisible(false);
-                        setJournalError(null);
-                        setEditingJournalEntryId(null);
-                      }}>
-                      <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
-                    </Pressable>
-
-                    <Pressable
-                      style={[
-                        styles.modalButton,
-                        styles.modalPrimaryButton,
-                        { backgroundColor: colors.primary, borderColor: colors.primary },
-                      ]}
-                      onPress={() => {
-                        if (!tripId) return;
-                        const text = journalText.trim();
-                        if (!text) {
-                          setJournalError('Please write something.');
-                          return;
-                        }
-
-                        if (editingJournalEntryId) {
-                          updateJournalEntry(tripId, editingJournalEntryId, { text, isShared: journalIsShared });
-                        } else {
-                          addJournalEntry(tripId, {
-                            date: journalDate || getTodayIsoDate(),
-                            text,
-                            isShared: journalIsShared,
-                            authorId: uid ?? undefined,
-                          });
-                        }
-                        setJournalModalVisible(false);
-                        setJournalError(null);
-                        setEditingJournalEntryId(null);
-                      }}>
-                      <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Save</ThemedText>
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-            </Modal>
+              <ThemedText style={styles.emptyText}>
+                {sharedTrip ? 'No activity yet. Changes made to this trip will appear here.' : 'Feed is only available for shared trips.'}
+              </ThemedText>
+            )}
           </ThemedView>
         );
       case 'photos':
@@ -3333,7 +3229,11 @@ export default function TripDetailsScreen() {
                     <View
                       key={p.id}
                       style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
-                      <ThemedText style={styles.personAvatarText}>{getInitials(p.name)}</ThemedText>
+                      {p.avatarUri ? (
+                        <ExpoImage source={{ uri: p.avatarUri }} style={styles.personAvatarImage} contentFit="cover" />
+                      ) : (
+                        <ThemedText style={styles.personAvatarText}>{getInitials(p.name)}</ThemedText>
+                      )}
                     </View>
                   ))}
                   <Pressable
@@ -3388,7 +3288,11 @@ export default function TripDetailsScreen() {
                     <View
                       key={p.id}
                       style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
-                      <ThemedText style={styles.personAvatarText}>{getInitials(p.name)}</ThemedText>
+                      {p.avatarUri ? (
+                        <ExpoImage source={{ uri: p.avatarUri }} style={styles.personAvatarImage} contentFit="cover" />
+                      ) : (
+                        <ThemedText style={styles.personAvatarText}>{getInitials(p.name)}</ThemedText>
+                      )}
                     </View>
                   ))}
                   <View style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
@@ -3415,7 +3319,7 @@ export default function TripDetailsScreen() {
           </ThemedView>
 
           <View style={styles.globalEditOverlay} pointerEvents="box-none">
-            {activeTab === 'overview' || (activeTab === 'itinerary' && !editMode) ? null : (
+            {activeTab === 'overview' || activeTab === 'feed' || (activeTab === 'itinerary' && !editMode) ? null : (
               <Pressable
                 style={[
                   styles.globalPlusButton,
@@ -3438,10 +3342,6 @@ export default function TripDetailsScreen() {
                     openExpenseModal();
                     return;
                   }
-                  if (activeTab === 'journal') {
-                    openJournalModal();
-                    return;
-                  }
                   if (activeTab === 'photos') {
                     Alert.alert('Select photos', 'Photo picking will be added soon.', [
                       { text: 'Cancel', style: 'cancel' },
@@ -3457,10 +3357,6 @@ export default function TripDetailsScreen() {
                 ) : activeTab === 'finances' ? (
                   <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
                     Add Expense
-                  </ThemedText>
-                ) : activeTab === 'journal' ? (
-                  <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
-                    Add Entry
                   </ThemedText>
                 ) : activeTab === 'photos' ? (
                   <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
@@ -3912,6 +3808,11 @@ const styles = StyleSheet.create({
   personAvatarText: {
     fontSize: 11,
     fontWeight: '700',
+  },
+  personAvatarImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 100,
   },
   housingCard: {
     borderWidth: 1,

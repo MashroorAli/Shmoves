@@ -19,7 +19,17 @@ export interface TripMember {
   role: 'owner' | 'member';
   status: 'pending' | 'accepted' | 'declined';
   displayName?: string;
+  avatarUri?: string;
   phone?: string;
+}
+
+export interface FeedEntry {
+  id: string;
+  actorId: string;
+  action: string;
+  section: string;
+  detail?: string;
+  timestamp: string;
 }
 
 export interface PendingInvite {
@@ -40,6 +50,7 @@ export interface SharedTripData {
   expenses: TripExpense[];
   housing: TripHousing[];
   journal: JournalEntry[];
+  feed: FeedEntry[];
   members: TripMember[];
   ownerId: string;
 }
@@ -117,6 +128,16 @@ async function writeColumn(sharedTripId: string, column: string, value: unknown)
   if (error) throw error;
 }
 
+async function appendFeedEntry(sharedTripId: string, entry: Omit<FeedEntry, 'id'>) {
+  try {
+    const current = await readColumn<FeedEntry[]>(sharedTripId, 'feed').catch(() => []);
+    const next = [{ id: `feed-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, ...entry }, ...current].slice(0, 200);
+    await writeColumn(sharedTripId, 'feed', next);
+  } catch {
+    // feed failures are non-blocking
+  }
+}
+
 // ─── Provider ────────────────────────────────────────────────────────────────
 
 export function SharedTripsProvider({ children, uid: userId }: { children: React.ReactNode; uid: string | null }) {
@@ -171,7 +192,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
           // Fetch profiles for member display names
           const memberUserIds = [...new Set((allMembers ?? []).map((m) => m.user_id))];
           const { data: profiles } = memberUserIds.length
-            ? await supabase.from('profiles').select('id, phone, name').in('id', memberUserIds)
+            ? await supabase.from('profiles').select('id, phone, name, avatar_url').in('id', memberUserIds)
             : { data: [] };
           const profileMap = new Map((profiles ?? []).map((p) => [p.id, p]));
 
@@ -186,6 +207,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
                   role: m.role as 'owner' | 'member',
                   status: m.status as 'accepted',
                   displayName: prof?.name ?? undefined,
+                  avatarUri: prof?.avatar_url ?? undefined,
                   phone: prof?.phone ?? undefined,
                 } satisfies TripMember;
               });
@@ -204,6 +226,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
               expenses: (row.expenses as TripExpense[]) ?? [],
               housing: (row.housing as TripHousing[]) ?? [],
               journal: (row.journal as JournalEntry[]) ?? [],
+              feed: (row.feed as FeedEntry[]) ?? [],
               members: tripMembers,
               ownerId: row.owner_id,
             };
@@ -448,6 +471,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       const next = [...current, created];
       await writeColumn(sharedTripId, 'flights', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, flights: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'added', section: 'Flight', detail: [flight.airline, flight.flightNumber].filter(Boolean).join(' '), timestamp: new Date().toISOString() });
       return created;
     };
 
@@ -456,6 +480,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       const next = current.map((f) => (f.id === flightId ? { ...f, ...flight } : f));
       await writeColumn(sharedTripId, 'flights', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, flights: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'edited', section: 'Flight', detail: [flight.airline, flight.flightNumber].filter(Boolean).join(' '), timestamp: new Date().toISOString() });
     };
 
     const deleteSharedFlight = async (sharedTripId: string, flightId: string) => {
@@ -463,6 +488,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       const next = current.filter((f) => f.id !== flightId);
       await writeColumn(sharedTripId, 'flights', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, flights: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'removed', section: 'Flight', timestamp: new Date().toISOString() });
     };
 
     const clearSharedFlights = async (sharedTripId: string) => {
@@ -482,6 +508,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       const next = [...current, created];
       await writeColumn(sharedTripId, 'itinerary', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, itinerary: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'added', section: 'Itinerary', detail: created.label, timestamp: new Date().toISOString() });
       return created;
     };
 
@@ -491,6 +518,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       const next = current.map((d) => (d.id === dayId ? { ...d, events: [...d.events, created] } : d));
       await writeColumn(sharedTripId, 'itinerary', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, itinerary: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'added', section: 'Itinerary', detail: name, timestamp: new Date().toISOString() });
       return created;
     };
 
@@ -542,6 +570,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       const next = [created, ...current];
       await writeColumn(sharedTripId, 'expenses', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, expenses: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'added', section: 'Expense', detail: `${expense.name.trim()} (${expense.currency.trim().toUpperCase()} ${expense.amount})`, timestamp: new Date().toISOString() });
       return created;
     };
 
@@ -550,6 +579,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       const next = current.map((e) => (e.id === expenseId ? { ...e, ...updates, name: updates.name.trim(), currency: updates.currency.trim().toUpperCase() } : e));
       await writeColumn(sharedTripId, 'expenses', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, expenses: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'edited', section: 'Expense', detail: updates.name.trim(), timestamp: new Date().toISOString() });
     };
 
     const deleteSharedExpense = async (sharedTripId: string, expenseId: string) => {
@@ -557,6 +587,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       const next = current.filter((e) => e.id !== expenseId);
       await writeColumn(sharedTripId, 'expenses', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, expenses: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'removed', section: 'Expense', timestamp: new Date().toISOString() });
     };
 
     // ── Journal CRUD ────────────────────────────────────────────────────
@@ -603,6 +634,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       const next = [...current, created];
       await writeColumn(sharedTripId, 'housing', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, housing: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'added', section: 'Housing', detail: housing.location.trim(), timestamp: new Date().toISOString() });
       return created;
     };
 
@@ -611,6 +643,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       const next = current.filter((h) => h.id !== housingId);
       await writeColumn(sharedTripId, 'housing', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, housing: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'removed', section: 'Housing', timestamp: new Date().toISOString() });
     };
 
     return {
