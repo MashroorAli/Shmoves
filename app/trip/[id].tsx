@@ -49,6 +49,40 @@ type TripPerson = {
   avatarUri?: string;
 };
 
+// ─── Currencies ──────────────────────────────────────────────────────────────
+const CURRENCIES = [
+  { code: 'USD', name: 'US Dollar' },
+  { code: 'EUR', name: 'Euro' },
+  { code: 'GBP', name: 'British Pound' },
+  { code: 'CAD', name: 'Canadian Dollar' },
+  { code: 'AUD', name: 'Australian Dollar' },
+  { code: 'JPY', name: 'Japanese Yen' },
+  { code: 'CHF', name: 'Swiss Franc' },
+  { code: 'CNY', name: 'Chinese Yuan' },
+  { code: 'INR', name: 'Indian Rupee' },
+  { code: 'MXN', name: 'Mexican Peso' },
+  { code: 'BRL', name: 'Brazilian Real' },
+  { code: 'KRW', name: 'South Korean Won' },
+  { code: 'SGD', name: 'Singapore Dollar' },
+  { code: 'HKD', name: 'Hong Kong Dollar' },
+  { code: 'NOK', name: 'Norwegian Krone' },
+  { code: 'SEK', name: 'Swedish Krona' },
+  { code: 'DKK', name: 'Danish Krone' },
+  { code: 'NZD', name: 'New Zealand Dollar' },
+  { code: 'ZAR', name: 'South African Rand' },
+  { code: 'AED', name: 'UAE Dirham' },
+  { code: 'SAR', name: 'Saudi Riyal' },
+  { code: 'THB', name: 'Thai Baht' },
+  { code: 'MYR', name: 'Malaysian Ringgit' },
+  { code: 'IDR', name: 'Indonesian Rupiah' },
+  { code: 'PHP', name: 'Philippine Peso' },
+  { code: 'PLN', name: 'Polish Zloty' },
+  { code: 'TRY', name: 'Turkish Lira' },
+  { code: 'EGP', name: 'Egyptian Pound' },
+  { code: 'COP', name: 'Colombian Peso' },
+  { code: 'ARS', name: 'Argentine Peso' },
+];
+
 // ─── SwipeableDayCard ────────────────────────────────────────────────────────
 const SWIPE_THRESHOLD = 40;
 
@@ -610,6 +644,8 @@ export default function TripDetailsScreen() {
   const [expenseName, setExpenseName] = useState('');
   const [expenseIsSplit, setExpenseIsSplit] = useState(false);
   const [expenseError, setExpenseError] = useState<string | null>(null);
+  const [currencyPickerVisible, setCurrencyPickerVisible] = useState(false);
+  const [currencySearch, setCurrencySearch] = useState('');
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
   const [journalModalVisible, setJournalModalVisible] = useState(false);
@@ -3064,7 +3100,7 @@ export default function TripDetailsScreen() {
                   <TextInput
                     value={expenseName}
                     onChangeText={setExpenseName}
-                    placeholder="Name (optional)"
+                    placeholder="Name"
                     placeholderTextColor="#888"
                     style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
                   />
@@ -3078,14 +3114,49 @@ export default function TripDetailsScreen() {
                     style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
                   />
 
-                  <TextInput
-                    value={expenseCurrency}
-                    onChangeText={setExpenseCurrency}
-                    placeholder="Currency (e.g., USD)"
-                    placeholderTextColor="#888"
-                    autoCapitalize="characters"
-                    style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                  />
+                  <Pressable
+                    onPress={() => { setCurrencySearch(''); setCurrencyPickerVisible(true); }}
+                    style={[styles.modalInput, { borderColor: colors.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
+                    <ThemedText style={{ color: colors.inputText, fontSize: 16 }}>
+                      {expenseCurrency} — {CURRENCIES.find(c => c.code === expenseCurrency)?.name ?? expenseCurrency}
+                    </ThemedText>
+                    <IconSymbol name="chevron.down" size={16} color={colors.icon} />
+                  </Pressable>
+
+                  <Modal visible={currencyPickerVisible} transparent animationType="fade">
+                    <View style={styles.modalOverlay}>
+                      <View style={[styles.modalCard, { backgroundColor: colors.surface, maxHeight: '70%' }]}>
+                        <ThemedText style={styles.modalTitle}>Select Currency</ThemedText>
+                        <TextInput
+                          value={currencySearch}
+                          onChangeText={setCurrencySearch}
+                          placeholder="Search..."
+                          placeholderTextColor="#888"
+                          autoFocus
+                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText, marginBottom: 8 }]}
+                        />
+                        <ScrollView keyboardShouldPersistTaps="handled">
+                          {CURRENCIES.filter(c =>
+                            c.code.toLowerCase().includes(currencySearch.toLowerCase()) ||
+                            c.name.toLowerCase().includes(currencySearch.toLowerCase())
+                          ).map(c => (
+                            <Pressable
+                              key={c.code}
+                              onPress={() => { setExpenseCurrency(c.code); setCurrencyPickerVisible(false); }}
+                              style={[styles.currencyRow, { borderBottomColor: colors.border }, expenseCurrency === c.code && { backgroundColor: colors.surfaceMuted }]}>
+                              <ThemedText style={{ fontWeight: '700', color: colors.text }}>{c.code}</ThemedText>
+                              <ThemedText style={{ color: colors.icon, fontSize: 13 }}>{c.name}</ThemedText>
+                            </Pressable>
+                          ))}
+                        </ScrollView>
+                        <Pressable
+                          style={[styles.modalButton, { borderColor: colors.border, marginTop: 8, alignSelf: 'center' }]}
+                          onPress={() => setCurrencyPickerVisible(false)}>
+                          <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
+                        </Pressable>
+                      </View>
+                    </View>
+                  </Modal>
 
                   <Pressable
                     style={[styles.checkboxRow, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
@@ -3126,12 +3197,12 @@ export default function TripDetailsScreen() {
                         const currency = expenseCurrency.trim().toUpperCase();
                         const amount = Number.parseFloat(expenseAmount);
 
-                        if (!Number.isFinite(amount) || amount <= 0) {
-                          setExpenseError('Please enter a valid amount.');
+                        if (!expenseName.trim()) {
+                          setExpenseError('Name is required.');
                           return;
                         }
-                        if (!currency) {
-                          setExpenseError('Currency is required.');
+                        if (!Number.isFinite(amount) || amount <= 0) {
+                          setExpenseError('Please enter a valid amount.');
                           return;
                         }
 
@@ -4536,6 +4607,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     opacity: 0.85,
+  },
+  currencyRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
   },
   checkboxRow: {
     borderWidth: 1,
