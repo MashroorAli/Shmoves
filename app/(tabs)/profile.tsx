@@ -28,34 +28,37 @@ export default function ProfileScreen() {
   const colors = Colors[theme];
 
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
+  const [usernameError, setUsernameError] = useState<string | null>(null);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
 
-  // Saved values to detect changes
   const [savedName, setSavedName] = useState('');
-  const [savedEmail, setSavedEmail] = useState('');
+  const [savedUsername, setSavedUsername] = useState('');
   const [savedAvatarUri, setSavedAvatarUri] = useState<string | null>(null);
 
+  const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const hasChanges =
-    name !== savedName || email !== savedEmail || avatarUri !== savedAvatarUri;
+  const handleUsernameChange = (text: string) => {
+    const cleaned = text.toLowerCase().replace(/[^a-z0-9]/g, '');
+    setUsername(cleaned);
+    setUsernameError(null);
+  };
 
-  // Load profile from Supabase
   useEffect(() => {
     if (!uid) return;
     (async () => {
       const { data } = await supabase
         .from('profiles')
-        .select('name, email, avatar_url')
+        .select('name, username, avatar_url')
         .eq('id', uid)
         .single();
       if (data) {
         setName(data.name ?? '');
-        setEmail(data.email ?? '');
+        setUsername(data.username ?? '');
         setAvatarUri(data.avatar_url ?? null);
         setSavedName(data.name ?? '');
-        setSavedEmail(data.email ?? '');
+        setSavedUsername(data.username ?? '');
         setSavedAvatarUri(data.avatar_url ?? null);
       }
     })();
@@ -110,22 +113,49 @@ export default function ProfileScreen() {
   }, [pickImage]);
 
   const getInitial = () => {
-    const trimmed = name.trim();
+    const trimmed = (editing ? name : savedName).trim();
     if (trimmed.length === 0) return '?';
     return trimmed[0].toUpperCase();
   };
 
-  const onSave = async () => {
-    if (!uid || !hasChanges) return;
+  const handleCancel = () => {
+    setName(savedName);
+    setUsername(savedUsername);
+    setAvatarUri(savedAvatarUri);
+    setUsernameError(null);
+    setEditing(false);
     Keyboard.dismiss();
+  };
+
+  const onSave = async () => {
+    if (!uid) return;
+    Keyboard.dismiss();
+
+    if (username !== savedUsername) {
+      if (username.length < 3 || username.length > 20) {
+        setUsernameError('Username must be 3–20 characters.');
+        return;
+      }
+      const { data: existing } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('username', username)
+        .neq('id', uid)
+        .maybeSingle();
+      if (existing) {
+        setUsernameError('That username is taken.');
+        return;
+      }
+    }
+
     setSaving(true);
+    setUsernameError(null);
 
     const updates: Record<string, string | null> = {
       name: name.trim(),
-      email: email.trim(),
+      username,
     };
 
-    // If avatar changed and is a local file, upload it
     if (avatarUri !== savedAvatarUri && avatarUri) {
       const ext = avatarUri.split('.').pop() ?? 'jpg';
       const filePath = `${uid}/avatar.${ext}`;
@@ -164,74 +194,112 @@ export default function ProfileScreen() {
       return;
     }
 
-    // Update saved state so button becomes disabled again
     setSavedName(name.trim());
-    setSavedEmail(email.trim());
+    setSavedUsername(username);
     if (updates.avatar_url !== undefined) {
       setSavedAvatarUri(updates.avatar_url);
       if (updates.avatar_url) setAvatarUri(updates.avatar_url);
     } else {
       setSavedAvatarUri(avatarUri);
     }
+
+    setEditing(false);
   };
+
+  const displayAvatarUri = editing ? avatarUri : savedAvatarUri;
 
   return (
     <ThemedView style={styles.container}>
-      <ThemedText type="title" style={styles.title}>My Profile</ThemedText>
+      {/* Header */}
+      <View style={styles.header}>
+        <ThemedText type="title">My Profile</ThemedText>
+        {!editing && (
+          <Pressable onPress={() => setEditing(true)} style={[styles.editButton, { borderColor: colors.border }]}>
+            <ThemedText style={[styles.editButtonText, { color: colors.primary }]}>Edit</ThemedText>
+          </Pressable>
+        )}
+      </View>
 
       {/* Avatar */}
-      <Pressable onPress={showImageOptions} style={styles.avatarContainer}>
-        {avatarUri ? (
-          <Image source={{ uri: avatarUri }} style={styles.avatar} />
+      <Pressable onPress={editing ? showImageOptions : undefined} style={styles.avatarContainer}>
+        {displayAvatarUri ? (
+          <Image source={{ uri: displayAvatarUri }} style={styles.avatar} />
         ) : (
           <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: colors.primary }]}>
             <ThemedText style={styles.avatarInitial}>{getInitial()}</ThemedText>
           </View>
         )}
-        <View style={[styles.cameraButton, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <ThemedText style={{ fontSize: 16 }}>📷</ThemedText>
-        </View>
+        {editing && (
+          <View style={[styles.cameraButton, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <ThemedText style={{ fontSize: 16 }}>📷</ThemedText>
+          </View>
+        )}
       </Pressable>
-      <ThemedText style={[styles.avatarHint, { color: colors.icon }]}>Tap to change photo</ThemedText>
+      {editing && (
+        <ThemedText style={[styles.avatarHint, { color: colors.icon }]}>Tap to change photo</ThemedText>
+      )}
 
       {/* Name */}
-      <ThemedText style={styles.label}>Name</ThemedText>
-      <TextInput
-        style={[styles.input, { borderColor: colors.border, color: colors.inputText, backgroundColor: colors.surface }]}
-        placeholder="Your name"
-        placeholderTextColor={colors.icon}
-        value={name}
-        onChangeText={setName}
-        autoCapitalize="words"
-        autoCorrect={false}
-      />
+      <ThemedText style={[styles.label, { color: colors.icon }]}>Name</ThemedText>
+      {editing ? (
+        <TextInput
+          style={[styles.input, { borderColor: colors.border, color: colors.inputText, backgroundColor: colors.surface }]}
+          placeholder="Your name"
+          placeholderTextColor={colors.icon}
+          value={name}
+          onChangeText={setName}
+          autoCapitalize="words"
+          autoCorrect={false}
+        />
+      ) : (
+        <ThemedText style={styles.staticValue}>{savedName || '—'}</ThemedText>
+      )}
 
-      {/* Email */}
-      <ThemedText style={styles.label}>Email</ThemedText>
-      <TextInput
-        style={[styles.input, { borderColor: colors.border, color: colors.inputText, backgroundColor: colors.surface }]}
-        placeholder="Your email"
-        placeholderTextColor={colors.icon}
-        value={email}
-        onChangeText={setEmail}
-        keyboardType="email-address"
-        autoCapitalize="none"
-        autoCorrect={false}
-      />
-
-      {/* Save Button */}
-      <Pressable
-        onPress={onSave}
-        disabled={!hasChanges || saving}
-        style={[
-          styles.saveButton,
-          { backgroundColor: colors.primary },
-          (!hasChanges || saving) && styles.saveButtonDisabled,
-        ]}>
-        <ThemedText style={styles.saveButtonText}>
-          {saving ? 'Saving...' : 'Save'}
+      {/* Username */}
+      <ThemedText style={[styles.label, { color: colors.icon }]}>Username</ThemedText>
+      {editing ? (
+        <>
+          <View style={[styles.usernameRow, { borderColor: usernameError ? '#d33' : colors.border, backgroundColor: colors.surface }]}>
+            <ThemedText style={[styles.usernameAt, { color: colors.icon }]}>@</ThemedText>
+            <TextInput
+              style={[styles.usernameInput, { color: colors.inputText }]}
+              placeholder="username"
+              placeholderTextColor={colors.icon}
+              value={username}
+              onChangeText={handleUsernameChange}
+              autoCapitalize="none"
+              autoCorrect={false}
+              maxLength={20}
+            />
+          </View>
+          {usernameError ? (
+            <ThemedText style={styles.usernameError}>{usernameError}</ThemedText>
+          ) : null}
+        </>
+      ) : (
+        <ThemedText style={styles.staticValue}>
+          {savedUsername ? `@${savedUsername}` : '—'}
         </ThemedText>
-      </Pressable>
+      )}
+
+      {/* Edit mode actions */}
+      {editing && (
+        <View style={styles.editActions}>
+          <Pressable
+            onPress={handleCancel}
+            style={[styles.cancelButton, { borderColor: colors.border }]}>
+            <ThemedText style={[styles.cancelButtonText, { color: colors.text }]}>Cancel</ThemedText>
+          </Pressable>
+          <Pressable
+            onPress={onSave}
+            disabled={saving}
+            style={[styles.saveButton, { backgroundColor: colors.primary }, saving && styles.saveButtonDisabled]}>
+            <ThemedText style={styles.saveButtonText}>
+              {saving ? 'Saving...' : 'Save'}
+            </ThemedText>
+          </Pressable>
+        </View>
+      )}
 
       <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
@@ -253,8 +321,21 @@ const styles = StyleSheet.create({
     padding: 24,
     paddingTop: 60,
   },
-  title: {
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 24,
+  },
+  editButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  editButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   avatarContainer: {
     alignSelf: 'center',
@@ -273,6 +354,7 @@ const styles = StyleSheet.create({
   avatarInitial: {
     color: '#fff',
     fontSize: 40,
+    lineHeight: 48,
     fontWeight: '700',
   },
   cameraButton: {
@@ -289,14 +371,21 @@ const styles = StyleSheet.create({
   avatarHint: {
     textAlign: 'center',
     fontSize: 13,
-    marginBottom: 24,
+    marginBottom: 16,
     marginTop: 4,
   },
   label: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '600',
-    marginBottom: 6,
-    marginTop: 12,
+    marginBottom: 4,
+    marginTop: 20,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  staticValue: {
+    fontSize: 17,
+    fontWeight: '500',
+    paddingVertical: 2,
   },
   input: {
     borderWidth: 1,
@@ -304,11 +393,49 @@ const styles = StyleSheet.create({
     padding: 12,
     fontSize: 16,
   },
-  saveButton: {
+  usernameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+  },
+  usernameAt: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginRight: 2,
+  },
+  usernameInput: {
+    flex: 1,
+    fontSize: 16,
+    paddingVertical: 12,
+  },
+  usernameError: {
+    color: '#d33',
+    fontSize: 13,
+    marginTop: 4,
+  },
+  editActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 32,
+  },
+  cancelButton: {
+    flex: 1,
+    borderWidth: 1,
     borderRadius: 10,
     paddingVertical: 12,
     alignItems: 'center',
-    marginTop: 32,
+  },
+  cancelButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  saveButton: {
+    flex: 1,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
   },
   saveButtonDisabled: {
     opacity: 0.4,

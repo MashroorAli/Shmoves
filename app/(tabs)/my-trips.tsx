@@ -1,19 +1,22 @@
+import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import React, { useMemo } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActionSheetIOS, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
+import { useAuth } from '@/context/auth-context';
 import { useSharedTrips } from '@/context/shared-trips-context';
 import { type Trip, useTrips } from '@/context/trips-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function MyTripsScreen() {
   const router = useRouter();
-  const { trips } = useTrips();
-  const { sharedTrips, pendingInvites, acceptInvite, declineInvite } = useSharedTrips();
+  const { uid } = useAuth();
+  const { trips, deleteTrip } = useTrips();
+  const { sharedTrips, pendingInvites, acceptInvite, declineInvite, deleteSharedTrip, leaveSharedTrip } = useSharedTrips();
   const theme = useColorScheme() ?? 'light';
   const colors = Colors[theme];
 
@@ -120,11 +123,54 @@ export default function MyTripsScreen() {
     return { upcomingTrips: upcoming, pastTrips: past, daysUntilNext };
   }, [trips, sharedTrips]);
 
+  const handleTripLongPress = (trip: MergedTrip) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    if (trip.isShared && trip.sharedTripId) {
+      const sharedData = sharedTrips.find((st) => st.id === trip.sharedTripId);
+      const isOwner = sharedData?.ownerId === uid;
+      const action = isOwner ? 'Delete Trip' : 'Leave Trip';
+
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: trip.destination,
+          message: formatTripMonthRange(trip.startDate, trip.endDate),
+          options: [action, 'Cancel'],
+          destructiveButtonIndex: 0,
+          cancelButtonIndex: 1,
+        },
+        (index) => {
+          if (index !== 0) return;
+          if (isOwner) {
+            deleteSharedTrip(trip.sharedTripId!);
+          } else {
+            leaveSharedTrip(trip.sharedTripId!);
+          }
+        },
+      );
+    } else {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: trip.destination,
+          message: formatTripMonthRange(trip.startDate, trip.endDate),
+          options: ['Delete Trip', 'Cancel'],
+          destructiveButtonIndex: 0,
+          cancelButtonIndex: 1,
+        },
+        (index) => {
+          if (index === 0) deleteTrip(trip.id);
+        },
+      );
+    }
+  };
+
   const renderTripCard = (trip: MergedTrip) => (
     <Pressable
       key={trip.sharedTripId ?? trip.id}
       style={[styles.tripCard, { borderColor: colors.border, backgroundColor: colors.surface }]}
-      onPress={() => handleTripPress(trip)}>
+      onPress={() => handleTripPress(trip)}
+      onLongPress={() => handleTripLongPress(trip)}
+      delayLongPress={400}>
       <View style={styles.tripCardTopRow}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <ThemedText style={styles.tripDestination}>{trip.destination}</ThemedText>

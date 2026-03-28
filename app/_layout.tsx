@@ -1,12 +1,15 @@
 import 'react-native-url-polyfill/auto';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import * as Linking from 'expo-linking';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState } from 'react';
+import { Alert } from 'react-native';
 import 'react-native-reanimated';
 
 import { AuthProvider, useAuth } from '@/context/auth-context';
-import { SharedTripsProvider } from '@/context/shared-trips-context';
+import { SharedTripsProvider, useSharedTrips } from '@/context/shared-trips-context';
 import { TripsProvider } from '@/context/trips-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { supabase } from '@/config/supabase';
@@ -86,8 +89,59 @@ function RootLayoutGate({ children }: { children: React.ReactNode }) {
   return (
     <TripsProvider userKey={uid}>
       <SharedTripsProvider uid={uid}>
-        {children}
+        <DeepLinkHandler>
+          {children}
+        </DeepLinkHandler>
       </SharedTripsProvider>
     </TripsProvider>
   );
+}
+
+const PENDING_INVITE_KEY = 'PENDING_INVITE_TOKEN';
+
+function DeepLinkHandler({ children }: { children: React.ReactNode }) {
+  const url = Linking.useURL();
+  const { uid } = useAuth();
+  const { resolveInviteToken } = useSharedTrips();
+
+  // Handle incoming deep links
+  useEffect(() => {
+    if (!url) return;
+
+    const parsed = Linking.parse(url);
+    let token: string | null = null;
+
+    // shmoves://invite/TOKEN → hostname="invite", path="TOKEN"
+    if (parsed.hostname === 'invite' && parsed.path) {
+      token = parsed.path.replace(/^\//, '');
+    }
+
+    if (!token) return;
+
+    if (!uid) {
+      // Not logged in — stash for after auth
+      AsyncStorage.setItem(PENDING_INVITE_KEY, token);
+      return;
+    }
+
+    resolveInviteToken(token).catch((err) => {
+      Alert.alert('Invite', err.message || 'Could not resolve invite.');
+    });
+  }, [url, uid, resolveInviteToken]);
+
+  // On login, check for stashed invite token
+  useEffect(() => {
+    if (!uid) return;
+    (async () => {
+      const stashed = await AsyncStorage.getItem(PENDING_INVITE_KEY);
+      if (stashed) {
+        await AsyncStorage.removeItem(PENDING_INVITE_KEY);
+        resolveInviteToken(stashed).catch((err) => {
+          Alert.alert('Invite', err.message || 'Could not resolve invite.');
+        });
+      }
+    })();
+  }, [uid, resolveInviteToken]);
+
+  return <>{children}</>;
 }

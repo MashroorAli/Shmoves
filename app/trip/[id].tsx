@@ -4,11 +4,11 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Image as ExpoImage } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as Contacts from 'expo-contacts';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as WebBrowser from 'expo-web-browser';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Animated,
@@ -19,6 +19,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Switch,
   TextInput,
@@ -215,7 +216,7 @@ export default function TripDetailsScreen() {
   const theme = useColorScheme() ?? 'light';
   const colors = Colors[theme];
   const { uid } = useAuth();
-  const { sharedTrips, migrateToShared, inviteToTrip } = useSharedTrips();
+  const { sharedTrips, migrateToShared, inviteToTrip, inviteByUsername } = useSharedTrips();
   const {
     trips,
     flightsByTripId,
@@ -243,12 +244,15 @@ export default function TripDetailsScreen() {
   } = useTrips();
   const [activeTab, setActiveTab] = useState<'overview' | 'itinerary' | 'finances' | 'journal' | 'photos'>('overview');
 
-  const trip = id ? trips.find((t) => t.id === id) : undefined;
+  const sharedTrip = sharedTrips.find(
+    (st) => st.trip.id === id || st.id === id,
+  );
+  const trip = id ? (trips.find((t) => t.id === id) ?? sharedTrip?.trip) : undefined;
   const tripId = id;
-  const flights = tripId ? flightsByTripId[tripId] ?? [] : [];
-  const itineraryDays = tripId ? itineraryByTripId[tripId] ?? [] : [];
-  const expenses = tripId ? expensesByTripId[tripId] ?? [] : [];
-  const journalEntries = tripId ? journalByTripId[tripId] ?? [] : [];
+  const flights = tripId ? (flightsByTripId[tripId]?.length ? flightsByTripId[tripId] : (sharedTrip?.flights ?? [])) : [];
+  const itineraryDays = tripId ? (itineraryByTripId[tripId]?.length ? itineraryByTripId[tripId] : (sharedTrip?.itinerary ?? [])) : [];
+  const expenses = tripId ? (expensesByTripId[tripId]?.length ? expensesByTripId[tripId] : (sharedTrip?.expenses ?? [])) : [];
+  const journalEntries = tripId ? (journalByTripId[tripId]?.length ? journalByTripId[tripId] : (sharedTrip?.journal ?? [])) : [];
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
   const selectedDay = selectedDayId ? itineraryDays.find((d) => d.id === selectedDayId) : undefined;
   const [expandedDayIds, setExpandedDayIds] = useState<Set<string>>(new Set());
@@ -667,10 +671,7 @@ export default function TripDetailsScreen() {
   const [overviewHousingCollapsed, setOverviewHousingCollapsed] = useState(false);
   const [overviewComingUpCollapsed, setOverviewComingUpCollapsed] = useState(false);
 
-  // Check if this trip is shared — if so, use members from shared context
-  const sharedTrip = sharedTrips.find(
-    (st) => st.trip.id === id || st.id === id,
-  );
+  // Members from shared context
   const tripPeople: TripPerson[] = sharedTrip
     ? sharedTrip.members
         .filter((m) => m.status === 'accepted')
@@ -694,82 +695,77 @@ export default function TripDetailsScreen() {
     return { year: now.getFullYear(), month: now.getMonth() };
   });
 
-  const [inviteModalVisible, setInviteModalVisible] = useState(false);
-  const [invitePhone, setInvitePhone] = useState('');
-  const [inviteError, setInviteError] = useState<string | null>(null);
-  const [inviteLoading, setInviteLoading] = useState(false);
+  const [isInviting, setIsInviting] = useState(false);
 
-  const openInviteModal = () => {
-    setInvitePhone('');
-    setInviteError(null);
-    setInviteLoading(false);
-    setInviteModalVisible(true);
+  const ensureSharedTrip = async (): Promise<string> => {
+    let sharedId = sharedTrip?.id;
+    if (!sharedId) {
+      sharedId = await migrateToShared(trip!, flights, itineraryDays, expenses, tripHousing, journalEntries);
+    }
+    return sharedId;
   };
 
-  const pickContact = async () => {
+  const handleShareLink = async () => {
+    if (!tripId || !trip || isInviting) return;
+    setIsInviting(true);
     try {
-      const result = await Contacts.presentContactPickerAsync();
-      if (result && result.phoneNumbers && result.phoneNumbers.length > 0) {
-        const raw = result.phoneNumbers[0].number ?? '';
-        // Normalize: strip non-digit except leading +
-        const cleaned = raw.startsWith('+')
-          ? '+' + raw.slice(1).replace(/\D/g, '')
-          : raw.replace(/\D/g, '');
-        setInvitePhone(cleaned);
-      }
-    } catch {
-      Alert.alert('Contacts', 'Could not access contacts. Please check permissions in Settings.');
-    }
-  };
-
-  const handleSendInvite = async () => {
-    if (!tripId || !trip) return;
-    const phone = invitePhone.trim();
-    if (!phone) {
-      setInviteError('Please enter a phone number.');
-      return;
-    }
-    // Basic phone validation
-    if (!/^\+?\d{7,15}$/.test(phone)) {
-      setInviteError('Please enter a valid phone number (e.g. +12025551234).');
-      return;
-    }
-
-    setInviteLoading(true);
-    setInviteError(null);
-
-    try {
-      let sharedId = sharedTrip?.id;
-
-      // If trip isn't shared yet, migrate it first
-      if (!sharedId) {
-        sharedId = await migrateToShared(
-          trip,
-          flights,
-          itineraryDays,
-          expenses,
-          tripHousing,
-          journalEntries,
-        );
-      }
-
-      await inviteToTrip(sharedId, phone);
-      setInviteModalVisible(false);
-
-      // Open native Messages app with pre-filled invite text
-      // TODO: replace dummy text with real App Store link once published
-      const message = encodeURIComponent(
-        'This is a test for sending invites for my app.',
-      );
-      const smsUrl =
-        Platform.OS === 'ios'
-          ? `sms:${phone}&body=${message}`
-          : `sms:${phone}?body=${message}`;
-      Linking.openURL(smsUrl);
+      const sharedId = await ensureSharedTrip();
+      const token = await inviteToTrip(sharedId);
+      const link = `shmoves://invite/${token}`;
+      await Share.share({
+        message: `Join my trip to ${trip.destination} on Shmoves! ${link}`,
+      });
     } catch (err: any) {
-      setInviteError(err.message || 'Something went wrong.');
+      Alert.alert('Error', err.message || 'Could not create invite link.');
     } finally {
-      setInviteLoading(false);
+      setIsInviting(false);
+    }
+  };
+
+  const handleInviteByUsername = () => {
+    if (!tripId || !trip || isInviting) return;
+    Alert.prompt(
+      'Invite by Username',
+      'Enter the username of the person you want to invite:',
+      async (text) => {
+        const cleaned = text?.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (!cleaned) return;
+        setIsInviting(true);
+        try {
+          const sharedId = await ensureSharedTrip();
+          await inviteByUsername(sharedId, cleaned);
+          Alert.alert('Invited!', `@${cleaned} has been invited to this trip.`);
+        } catch (err: any) {
+          Alert.alert('Error', err.message || 'Could not send invite.');
+        } finally {
+          setIsInviting(false);
+        }
+      },
+      'plain-text',
+      '',
+      'default',
+    );
+  };
+
+  const handleInvitePress = () => {
+    if (!tripId || !trip) return;
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Invite by Username', 'Share Invite Link', 'Cancel'],
+          cancelButtonIndex: 2,
+        },
+        (index) => {
+          if (index === 0) handleInviteByUsername();
+          else if (index === 1) handleShareLink();
+        },
+      );
+    } else {
+      Alert.alert('Invite', 'Choose an option', [
+        { text: 'Invite by Username', onPress: handleInviteByUsername },
+        { text: 'Share Invite Link', onPress: handleShareLink },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
     }
   };
 
@@ -3342,7 +3338,7 @@ export default function TripDetailsScreen() {
                   ))}
                   <Pressable
                     style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
-                    onPress={openInviteModal}>
+                    onPress={handleInvitePress}>
                     <IconSymbol name="plus" size={18} color={colors.primary} />
                   </Pressable>
                 </View>
@@ -3655,61 +3651,6 @@ export default function TripDetailsScreen() {
         );
       })()}
 
-      {/* Invite Modal */}
-      <Modal visible={inviteModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
-            <ThemedText style={styles.modalTitle}>Invite to Trip</ThemedText>
-            <ThemedText style={[styles.modalSubtitle, { marginBottom: 12 }]}>
-              Enter a phone number or pick from contacts
-            </ThemedText>
-
-            <TextInput
-              value={invitePhone}
-              onChangeText={setInvitePhone}
-              placeholder="+1 (555) 123-4567"
-              placeholderTextColor="#888"
-              keyboardType="phone-pad"
-              autoComplete="tel"
-              style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-            />
-
-            <Pressable
-              style={[styles.modalButton, { borderColor: colors.border, marginTop: 8, marginBottom: 4 }]}
-              onPress={pickContact}>
-              <IconSymbol name="person.crop.circle" size={16} color={colors.primary} />
-              <ThemedText style={[styles.modalButtonText, { color: colors.primary, marginLeft: 6 }]}>
-                Pick from Contacts
-              </ThemedText>
-            </Pressable>
-
-            {inviteError ? <ThemedText style={styles.modalErrorText}>{inviteError}</ThemedText> : null}
-
-            <View style={[styles.modalActions, { marginTop: 12 }]}>
-              <Pressable
-                style={[styles.modalButton, { borderColor: colors.border }]}
-                onPress={() => setInviteModalVisible(false)}>
-                <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
-              </Pressable>
-
-              <Pressable
-                style={[
-                  styles.modalButton,
-                  styles.modalPrimaryButton,
-                  { backgroundColor: colors.primary, borderColor: colors.primary },
-                ]}
-                disabled={inviteLoading}
-                onPress={handleSendInvite}>
-                {inviteLoading ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Send Invite</ThemedText>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </ThemedView>
   );
 }

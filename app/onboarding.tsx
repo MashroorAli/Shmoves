@@ -25,7 +25,7 @@ import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/config/supabase';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
-type Step = 'name' | 'photo';
+type Step = 'name' | 'username' | 'photo';
 
 export default function OnboardingScreen() {
   const theme = useColorScheme() ?? 'light';
@@ -35,14 +35,20 @@ export default function OnboardingScreen() {
 
   const [step, setStep] = useState<Step>('name');
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [checkingUsername, setCheckingUsername] = useState(false);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const nameInputRef = useRef<TextInput>(null);
+  const usernameInputRef = useRef<TextInput>(null);
 
   // Step transition animations
   const nameOpacity = useRef(new Animated.Value(1)).current;
   const nameTranslateX = useRef(new Animated.Value(0)).current;
+  const usernameOpacity = useRef(new Animated.Value(0)).current;
+  const usernameTranslateX = useRef(new Animated.Value(60)).current;
   const photoOpacity = useRef(new Animated.Value(0)).current;
   const photoTranslateX = useRef(new Animated.Value(60)).current;
 
@@ -56,7 +62,7 @@ export default function OnboardingScreen() {
     Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true, speed: 50 }).start();
   };
 
-  const goToPhoto = () => {
+  const goToUsername = () => {
     if (name.trim().length === 0) {
       Alert.alert('Name required', 'Please enter your name to continue.');
       return;
@@ -65,6 +71,53 @@ export default function OnboardingScreen() {
     Animated.parallel([
       Animated.timing(nameOpacity, { toValue: 0, duration: 220, useNativeDriver: true }),
       Animated.timing(nameTranslateX, { toValue: -60, duration: 220, useNativeDriver: true }),
+    ]).start(() => {
+      setStep('username');
+      setUsernameError(null);
+      Animated.parallel([
+        Animated.timing(usernameOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
+        Animated.timing(usernameTranslateX, { toValue: 0, duration: 260, useNativeDriver: true }),
+      ]).start(() => usernameInputRef.current?.focus());
+    });
+  };
+
+  const handleUsernameChange = (text: string) => {
+    const cleaned = text.toLowerCase().replace(/[^a-z0-9]/g, '');
+    setUsername(cleaned);
+    setUsernameError(null);
+  };
+
+  const goToPhoto = async () => {
+    if (username.length < 3) {
+      setUsernameError('Username must be at least 3 characters.');
+      return;
+    }
+    if (username.length > 20) {
+      setUsernameError('Username must be 20 characters or less.');
+      return;
+    }
+
+    setCheckingUsername(true);
+    setUsernameError(null);
+
+    const { data: existing } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('username', username)
+      .neq('id', uid ?? '')
+      .maybeSingle();
+
+    setCheckingUsername(false);
+
+    if (existing) {
+      setUsernameError('That username is taken. Try another.');
+      return;
+    }
+
+    Keyboard.dismiss();
+    Animated.parallel([
+      Animated.timing(usernameOpacity, { toValue: 0, duration: 220, useNativeDriver: true }),
+      Animated.timing(usernameTranslateX, { toValue: -60, duration: 220, useNativeDriver: true }),
     ]).start(() => {
       setStep('photo');
       Animated.parallel([
@@ -134,6 +187,7 @@ export default function OnboardingScreen() {
 
     const updates: Record<string, string | null> = {
       name: name.trim(),
+      username,
     };
 
     // Upload avatar if selected
@@ -193,11 +247,17 @@ export default function OnboardingScreen() {
               {step === 'name' ? 'Welcome to Shmoves' : `Hey ${name.trim()} 👋`}
             </ThemedText>
             <ThemedText style={[styles.heading, { color: colors.text }]}>
-              {step === 'name' ? "What's your name?" : 'Add a profile photo'}
+              {step === 'name'
+                ? "What's your name?"
+                : step === 'username'
+                ? 'Pick a username'
+                : 'Add a profile photo'}
             </ThemedText>
             <ThemedText style={[styles.subtext, { color: colors.icon }]}>
               {step === 'name'
                 ? "This is how you'll appear to trip collaborators."
+                : step === 'username'
+                ? 'Friends can find you by your unique username.'
                 : 'Help your friends recognize you.'}
             </ThemedText>
           </View>
@@ -212,7 +272,7 @@ export default function OnboardingScreen() {
                 {
                   opacity: nameOpacity,
                   transform: [{ translateX: nameTranslateX }],
-                  position: step === 'photo' ? 'absolute' : 'relative',
+                  position: step !== 'name' ? 'absolute' : 'relative',
                 },
               ]}>
               <TextInput
@@ -225,12 +285,51 @@ export default function OnboardingScreen() {
                 autoCorrect={false}
                 autoFocus
                 returnKeyType="done"
-                onSubmitEditing={goToPhoto}
+                onSubmitEditing={goToUsername}
                 style={[
                   styles.nameInput,
                   { borderBottomColor: colors.border, color: colors.inputText },
                 ]}
               />
+            </Animated.View>
+
+            {/* Username step */}
+            <Animated.View
+              pointerEvents={step === 'username' ? 'auto' : 'none'}
+              style={[
+                styles.stepPanel,
+                {
+                  opacity: usernameOpacity,
+                  transform: [{ translateX: usernameTranslateX }],
+                  position: step !== 'username' ? 'absolute' : 'relative',
+                },
+              ]}>
+              <View style={styles.usernameRow}>
+                <ThemedText style={[styles.usernameAt, { color: colors.icon }]}>@</ThemedText>
+                <TextInput
+                  ref={usernameInputRef}
+                  value={username}
+                  onChangeText={handleUsernameChange}
+                  placeholder="username"
+                  placeholderTextColor={colors.icon}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="done"
+                  onSubmitEditing={goToPhoto}
+                  maxLength={20}
+                  style={[
+                    styles.usernameInput,
+                    { borderBottomColor: usernameError ? '#d33' : colors.border, color: colors.inputText },
+                  ]}
+                />
+              </View>
+              {usernameError ? (
+                <ThemedText style={styles.usernameError}>{usernameError}</ThemedText>
+              ) : username.length > 0 ? (
+                <ThemedText style={[styles.usernameHint, { color: colors.icon }]}>
+                  Letters and numbers only, 3-20 characters
+                </ThemedText>
+              ) : null}
             </Animated.View>
 
             {/* Photo step */}
@@ -271,16 +370,17 @@ export default function OnboardingScreen() {
                   styles.pill,
                   { backgroundColor: colors.primary },
                   (step === 'name' && name.trim().length === 0) && styles.pillDisabled,
+                  (step === 'username' && username.length < 3) && styles.pillDisabled,
                 ]}
                 onPressIn={pressIn}
                 onPressOut={pressOut}
-                onPress={step === 'name' ? goToPhoto : finishOnboarding}
-                disabled={saving || (step === 'name' && name.trim().length === 0)}>
-                {saving ? (
+                onPress={step === 'name' ? goToUsername : step === 'username' ? goToPhoto : finishOnboarding}
+                disabled={saving || checkingUsername || (step === 'name' && name.trim().length === 0) || (step === 'username' && username.length < 3)}>
+                {saving || checkingUsername ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <ThemedText style={styles.pillText}>
-                    {step === 'name' ? 'Continue →' : avatarUri ? "Let's go →" : 'Save & Continue →'}
+                    {step === 'name' ? 'Continue →' : step === 'username' ? 'Continue →' : avatarUri ? "Let's go →" : 'Save & Continue →'}
                   </ThemedText>
                 )}
               </Pressable>
@@ -340,6 +440,34 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     paddingTop: 4,
   },
+  usernameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  usernameAt: {
+    fontSize: 24,
+    fontWeight: '600',
+    marginRight: 2,
+    opacity: 0.5,
+  },
+  usernameInput: {
+    flex: 1,
+    fontSize: 24,
+    fontWeight: '600',
+    borderBottomWidth: 2,
+    paddingBottom: 14,
+    paddingTop: 4,
+  },
+  usernameError: {
+    color: '#d33',
+    fontSize: 13,
+    marginTop: 8,
+    fontWeight: '500',
+  },
+  usernameHint: {
+    fontSize: 13,
+    marginTop: 8,
+  },
   avatarContainer: {
     position: 'relative',
     marginBottom: 8,
@@ -356,6 +484,7 @@ const styles = StyleSheet.create({
   avatarInitial: {
     color: '#fff',
     fontSize: 56,
+    lineHeight: 66,
     fontWeight: '700',
   },
   cameraButton: {

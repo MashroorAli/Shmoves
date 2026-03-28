@@ -62,7 +62,11 @@ interface SharedTripsContextValue {
     journal: JournalEntry[],
   ) => Promise<string>;
 
-  inviteToTrip: (sharedTripId: string, phone: string) => Promise<{ existed: boolean }>;
+  inviteToTrip: (sharedTripId: string) => Promise<string>;
+  inviteByUsername: (sharedTripId: string, username: string) => Promise<void>;
+  resolveInviteToken: (token: string) => Promise<void>;
+  deleteSharedTrip: (sharedTripId: string) => Promise<void>;
+  leaveSharedTrip: (sharedTripId: string) => Promise<void>;
 
   // CRUD — mirrors TripsContext but writes to shared_trips table
   addSharedFlight: (sharedTripId: string, flight: Omit<FlightInfo, 'id'>) => Promise<FlightInfo>;
@@ -129,50 +133,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
     }
 
     try {
-      // 1. Resolve any trip_invites for this user's phone → create trip_members rows
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('phone')
-        .eq('id', userId)
-        .single();
-
-      if (profile?.phone) {
-        const { data: openInvites } = await supabase
-          .from('trip_invites')
-          .select('id, trip_id')
-          .eq('phone', profile.phone)
-          .eq('status', 'pending');
-
-        if (openInvites?.length) {
-          for (const inv of openInvites) {
-            // Check if trip_members row already exists
-            const { data: existing } = await supabase
-              .from('trip_members')
-              .select('id')
-              .eq('trip_id', inv.trip_id)
-              .eq('user_id', userId)
-              .maybeSingle();
-
-            if (!existing) {
-              await supabase.from('trip_members').insert({
-                trip_id: inv.trip_id,
-                user_id: userId,
-                role: 'member',
-                status: 'pending',
-                invited_by: userId, // will be overwritten by the actual inviter in a future refinement
-              });
-            }
-
-            // Mark invite as accepted (user has the app now)
-            await supabase
-              .from('trip_invites')
-              .update({ status: 'accepted' })
-              .eq('id', inv.id);
-          }
-        }
-      }
-
-      // 2. Fetch all trip_members rows for this user
+      // 1. Fetch all trip_members rows for this user
       const { data: memberships, error: memErr } = await supabase
         .from('trip_members')
         .select('id, trip_id, role, status, invited_by')
@@ -210,7 +171,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
           // Fetch profiles for member display names
           const memberUserIds = [...new Set((allMembers ?? []).map((m) => m.user_id))];
           const { data: profiles } = memberUserIds.length
-            ? await supabase.from('profiles').select('id, phone, display_name').in('id', memberUserIds)
+            ? await supabase.from('profiles').select('id, phone, name').in('id', memberUserIds)
             : { data: [] };
           const profileMap = new Map((profiles ?? []).map((p) => [p.id, p]));
 
@@ -224,7 +185,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
                   userId: m.user_id,
                   role: m.role as 'owner' | 'member',
                   status: m.status as 'accepted',
-                  displayName: prof?.display_name ?? undefined,
+                  displayName: prof?.name ?? undefined,
                   phone: prof?.phone ?? undefined,
                 } satisfies TripMember;
               });
@@ -263,7 +224,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
         // Fetch inviter profiles
         const inviterIds = [...new Set(pending.map((m) => m.invited_by).filter(Boolean))];
         const { data: inviterProfiles } = inviterIds.length
-          ? await supabase.from('profiles').select('id, phone, display_name').in('id', inviterIds)
+          ? await supabase.from('profiles').select('id, phone, name').in('id', inviterIds)
           : { data: [] };
         const inviterMap = new Map((inviterProfiles ?? []).map((p) => [p.id, p]));
 
@@ -279,7 +240,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
               startDate: trip.startDate ?? '',
               endDate: trip.endDate ?? '',
               inviterPhone: inviter?.phone ?? undefined,
-              inviterName: inviter?.display_name ?? undefined,
+              inviterName: inviter?.name ?? undefined,
               memberRowId: m.id,
             };
           })
@@ -368,43 +329,116 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       return data.id;
     };
 
-    // ── Invite ──────────────────────────────────────────────────────────
-    const inviteToTrip = async (sharedTripId: string, phone: string): Promise<{ existed: boolean }> => {
+    // ── Invite (link-based) ──────────────────────────────────────────────
+    const inviteToTrip = async (sharedTripId: string): Promise<string> => {
       if (!userId) throw new Error('Not authenticated');
 
-      // Normalize phone
-      const normalized = phone.replace(/[^+\d]/g, '');
+      const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 10)}`;
 
-      // Check if user exists
-      const { data: profile } = await supabase
+      const { error } = await supabase.from('trip_invites').insert({
+        trip_id: sharedTripId,
+        inviter_id: userId,
+        token,
+        status: 'pending',
+      });
+      if (error) throw error;
+
+      return token;
+    };
+
+    // ── Invite by username (direct invite) ────────────────────────────────
+    const inviteByUsername = async (sharedTripId: string, username: string): Promise<void> => {
+      if (!userId) throw new Error('Not authenticated');
+
+      const { data: profile, error: lookupErr } = await supabase
         .from('profiles')
         .select('id')
-        .eq('phone', normalized)
+        .eq('username', username)
+        .maybeSingle();
+      if (lookupErr) throw lookupErr;
+      if (!profile) throw new Error('No user found with that username.');
+      if (profile.id === userId) throw new Error("You can't invite yourself.");
+
+      // Check if already a member
+      const { data: existing } = await supabase
+        .from('trip_members')
+        .select('id')
+        .eq('trip_id', sharedTripId)
+        .eq('user_id', profile.id)
+        .maybeSingle();
+      if (existing) throw new Error('That user is already part of this trip.');
+
+      const { error } = await supabase.from('trip_members').insert({
+        trip_id: sharedTripId,
+        user_id: profile.id,
+        role: 'member',
+        status: 'pending',
+        invited_by: userId,
+      });
+      if (error) throw error;
+
+      await refresh();
+    };
+
+    // ── Resolve invite token (from deep link) ────────────────────────────
+    const resolveInviteToken = async (token: string): Promise<void> => {
+      if (!userId) throw new Error('Not authenticated');
+
+      const { data: invite, error } = await supabase
+        .from('trip_invites')
+        .select('id, trip_id, inviter_id')
+        .eq('token', token)
+        .eq('status', 'pending')
         .maybeSingle();
 
-      // Insert trip_invites row
-      await supabase.from('trip_invites').upsert(
-        { trip_id: sharedTripId, inviter_id: userId, phone: normalized, status: 'pending' },
-        { onConflict: 'trip_id,phone' },
-      );
+      if (error) throw error;
+      if (!invite) throw new Error('Invite not found or already used.');
 
-      if (profile) {
-        // User exists — create trip_members row
-        await supabase.from('trip_members').upsert(
-          {
-            trip_id: sharedTripId,
-            user_id: profile.id,
-            role: 'member',
-            status: 'pending',
-            invited_by: userId,
-          },
-          { onConflict: 'trip_id,user_id' },
-        );
-        return { existed: true };
+      // Check if already a member
+      const { data: existing } = await supabase
+        .from('trip_members')
+        .select('id')
+        .eq('trip_id', invite.trip_id)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (!existing) {
+        await supabase.from('trip_members').insert({
+          trip_id: invite.trip_id,
+          user_id: userId,
+          role: 'member',
+          status: 'pending',
+          invited_by: invite.inviter_id,
+        });
       }
 
-      // User doesn't exist — SMS invite is handled client-side via native Messages app
-      return { existed: false };
+      await supabase
+        .from('trip_invites')
+        .update({ status: 'accepted' })
+        .eq('id', invite.id);
+
+      await refresh();
+    };
+
+    // ── Delete / Leave ──────────────────────────────────────────────────
+    const deleteSharedTrip = async (sharedTripId: string) => {
+      if (!userId) throw new Error('Not authenticated');
+      await supabase.from('trip_members').delete().eq('trip_id', sharedTripId);
+      await supabase.from('trip_invites').delete().eq('trip_id', sharedTripId);
+      const { error } = await supabase.from('shared_trips').delete().eq('id', sharedTripId);
+      if (error) throw error;
+      setSharedTrips((prev) => prev.filter((t) => t.id !== sharedTripId));
+    };
+
+    const leaveSharedTrip = async (sharedTripId: string) => {
+      if (!userId) throw new Error('Not authenticated');
+      const { error } = await supabase
+        .from('trip_members')
+        .delete()
+        .eq('trip_id', sharedTripId)
+        .eq('user_id', userId);
+      if (error) throw error;
+      setSharedTrips((prev) => prev.filter((t) => t.id !== sharedTripId));
     };
 
     // ── Flights CRUD ────────────────────────────────────────────────────
@@ -588,6 +622,10 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       declineInvite,
       migrateToShared,
       inviteToTrip,
+      inviteByUsername,
+      resolveInviteToken,
+      deleteSharedTrip,
+      leaveSharedTrip,
       addSharedFlight,
       updateSharedFlight,
       deleteSharedFlight,
