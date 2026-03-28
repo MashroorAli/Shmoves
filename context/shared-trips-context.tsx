@@ -284,6 +284,21 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
     refresh();
   }, [refresh]);
 
+  // ── Real-time sync ──────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!userId) return;
+    const channel = supabase
+      .channel('shared_trips_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shared_trips' }, () => {
+        refresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'trip_members' }, () => {
+        refresh();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [userId, refresh]);
+
   // ── Local state updater helper ──────────────────────────────────────────
   const updateLocalTrip = useCallback(
     (sharedTripId: string, updater: (t: SharedTripData) => SharedTripData) => {
