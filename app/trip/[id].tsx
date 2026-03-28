@@ -642,10 +642,14 @@ export default function TripDetailsScreen() {
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseCurrency, setExpenseCurrency] = useState('USD');
   const [expenseName, setExpenseName] = useState('');
-  const [expenseIsSplit, setExpenseIsSplit] = useState(false);
+
   const [expenseError, setExpenseError] = useState<string | null>(null);
   const [currencyPickerVisible, setCurrencyPickerVisible] = useState(false);
   const [currencySearch, setCurrencySearch] = useState('');
+  const [expenseStep, setExpenseStep] = useState<'details' | 'split-type' | 'split-members'>('details');
+  const [splitWith, setSplitWith] = useState<string[]>([]);
+  const [splitMode, setSplitMode] = useState<'none' | 'even' | 'uneven'>('none');
+  const [pendingSplitMode, setPendingSplitMode] = useState<'none' | 'even' | 'uneven'>('none');
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
   const [journalModalVisible, setJournalModalVisible] = useState(false);
@@ -1295,20 +1299,26 @@ export default function TripDetailsScreen() {
     return arr ? `${dow}, ${mon} ${day} ${dep} — ${arr}` : `${dow}, ${mon} ${day} ${dep}`;
   };
 
-  const openExpenseModal = (expense?: { id: string; name: string; amount: number; currency: string; isSplit: boolean }) => {
+  const openExpenseModal = (expense?: { id: string; name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }) => {
     if (expense) {
       setEditingExpenseId(expense.id);
       setExpenseAmount(String(expense.amount));
       setExpenseCurrency(expense.currency);
       setExpenseName(expense.name);
-      setExpenseIsSplit(expense.isSplit);
+      setSplitWith(expense.splitWith ?? []);
+      const mode = expense.isSplit ? (expense.splitType === 'even' ? 'even' : 'uneven') : 'none';
+      setSplitMode(mode);
+      setPendingSplitMode(mode);
     } else {
       setEditingExpenseId(null);
       setExpenseAmount('');
       setExpenseCurrency('USD');
       setExpenseName('');
-      setExpenseIsSplit(false);
+      setSplitWith([]);
+      setSplitMode('none');
+      setPendingSplitMode('none');
     }
+    setExpenseStep('details');
     setExpenseError(null);
     setExpenseModalVisible(true);
   };
@@ -3006,27 +3016,45 @@ export default function TripDetailsScreen() {
                   backgroundColor: colors.surface,
                 },
               ]}>
-              <ThemedText style={styles.financesTotalLabel}>Total</ThemedText>
+              <ThemedText style={styles.financesTotalLabel}>Your Total</ThemedText>
               <ThemedText numberOfLines={2} style={styles.financesTotalValue}>
                 {(() => {
-                  const totalsByCurrency = expenses.reduce<Record<string, number>>((acc, expense) => {
-                    const currency = expense.currency || 'USD';
-                    acc[currency] = (acc[currency] ?? 0) + expense.amount;
+                  const myShareByCurrency = expenses.reduce<Record<string, number>>((acc, e) => {
+                    const currency = e.currency || 'USD';
+                    const isCreator = !sharedTrip || e.createdBy === uid || !e.createdBy;
+                    const isSplitWithMe = e.splitWith?.includes(uid ?? '') ?? false;
+
+                    let share = 0;
+                    if (e.isSplit && e.splitType === 'even' && e.splitWith && e.splitWith.length > 0) {
+                      const perPerson = e.amount / (e.splitWith.length + 1);
+                      if (isCreator || isSplitWithMe) share = perPerson;
+                    } else if (isCreator) {
+                      share = e.amount;
+                    }
+
+                    acc[currency] = (acc[currency] ?? 0) + share;
                     return acc;
                   }, {});
 
-                  const parts = Object.entries(totalsByCurrency)
+                  const parts = Object.entries(myShareByCurrency)
+                    .filter(([, amount]) => amount > 0)
                     .sort(([a], [b]) => a.localeCompare(b))
                     .map(([currency, amount]) => `${amount.toFixed(2)} ${currency}`);
 
-                  return parts.length ? parts.join(' | ') : '$0.00';
+                  return parts.length ? parts.join(' | ') : '0.00';
                 })()}
               </ThemedText>
             </ThemedView>
 
-            {expenses.length > 0 ? (
+            {(() => {
+              const myExpenses = expenses.filter((e) => {
+                const isCreator = !sharedTrip || e.createdBy === uid || !e.createdBy;
+                const isSplitWithMe = e.splitWith?.includes(uid ?? '') ?? false;
+                return isCreator || isSplitWithMe;
+              });
+              return myExpenses.length > 0 ? (
               <ThemedView style={styles.financesList}>
-                {expenses.map((e) => (
+                {myExpenses.map((e) => (
                   <Pressable
                     key={e.id}
                     style={[styles.financeCard, { borderColor: colors.border, backgroundColor: colors.surface }]}
@@ -3038,6 +3066,8 @@ export default function TripDetailsScreen() {
                         amount: e.amount,
                         currency: e.currency,
                         isSplit: e.isSplit,
+                        splitType: e.splitType,
+                        splitWith: e.splitWith,
                       });
                     }}>
                     <View style={styles.financeHeaderRow}>
@@ -3047,7 +3077,16 @@ export default function TripDetailsScreen() {
                       </ThemedText>
                     </View>
                     <View style={styles.financeMetaRow}>
-                      {e.isSplit ? <ThemedText style={styles.financeMeta}>Split</ThemedText> : null}
+                      {e.isSplit && e.splitWith && e.splitWith.length > 0 ? (
+                        <ThemedText style={styles.financeMeta}>
+                          {'Even split · '}
+                          {(e.amount / (e.splitWith.length + 1)).toFixed(2)} {e.currency} each
+                          {' · '}
+                          {e.splitWith.length + 1} people
+                        </ThemedText>
+                      ) : e.isSplit ? (
+                        <ThemedText style={styles.financeMeta}>Split</ThemedText>
+                      ) : null}
                       {editMode ? (
                         <View style={styles.inlineActionsRow}>
                           <Pressable
@@ -3059,6 +3098,8 @@ export default function TripDetailsScreen() {
                                 amount: e.amount,
                                 currency: e.currency,
                                 isSplit: e.isSplit,
+                                splitType: e.splitType,
+                                splitWith: e.splitWith,
                               });
                             }}>
                             <ThemedText style={[styles.inlineActionText, { color: colors.primary }]}>Edit</ThemedText>
@@ -3090,7 +3131,8 @@ export default function TripDetailsScreen() {
               </ThemedView>
             ) : (
               <ThemedText style={styles.emptyText}>No expenses yet.</ThemedText>
-            )}
+            );
+            })()}
 
             <Modal visible={expenseModalVisible} transparent animationType="fade">
               <View style={styles.modalOverlay}>
@@ -3158,20 +3200,128 @@ export default function TripDetailsScreen() {
                     </View>
                   </Modal>
 
+                  {/* Split button — shows current selection */}
                   <Pressable
                     style={[styles.checkboxRow, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
-                    onPress={() => setExpenseIsSplit((v) => !v)}>
-                    <View
-                      style={[
-                        styles.checkboxBox,
-                        {
-                          borderColor: colors.border,
-                          backgroundColor: expenseIsSplit ? colors.primary : colors.surface,
-                        },
-                      ]}
-                    />
-                    <ThemedText style={styles.checkboxLabel}>Split?</ThemedText>
+                    onPress={() => setExpenseStep('split-type')}>
+                    <ThemedText style={[styles.checkboxLabel, { flex: 1 }]}>Split</ThemedText>
+                    <ThemedText style={{ color: splitMode !== 'none' ? colors.primary : colors.icon, fontSize: 13 }}>
+                      {splitMode === 'even'
+                        ? splitWith.length > 0 ? `Even · ${splitWith.length + 1} people` : 'Even'
+                        : splitMode === 'uneven' ? 'Uneven'
+                        : 'None'}
+                    </ThemedText>
+                    <IconSymbol name="chevron.right" size={14} color={colors.icon} style={{ marginLeft: 4 }} />
                   </Pressable>
+
+                  {/* Step 2: Split type — None / Even / Uneven */}
+                  <Modal visible={expenseStep === 'split-type'} transparent animationType="slide">
+                    <View style={styles.modalOverlay}>
+                      <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
+                        <ThemedText style={styles.modalTitle}>How to Split?</ThemedText>
+
+                        {(['none', 'even', 'uneven'] as const).map((option) => {
+                          const isDisabled = option === 'uneven';
+                          const isSelected = pendingSplitMode === option;
+                          const label = option === 'none' ? 'None' : option === 'even' ? 'Even' : 'Uneven';
+                          return (
+                            <Pressable
+                              key={option}
+                              disabled={isDisabled}
+                              style={[
+                                styles.modalButton,
+                                { borderColor: isSelected ? colors.primary : colors.border, marginBottom: 10, flexDirection: 'row', alignItems: 'center' },
+                                isSelected && { backgroundColor: colors.primary + '18' },
+                                isDisabled && { opacity: 0.4 },
+                              ]}
+                              onPress={() => setPendingSplitMode(option)}>
+                              <View style={[styles.checkboxBox, { borderColor: isSelected ? colors.primary : colors.border, backgroundColor: isSelected ? colors.primary : colors.surface, marginRight: 10, flexShrink: 0 }]} />
+                              <ThemedText style={[styles.modalButtonText, isSelected && { color: colors.primary, fontWeight: '700' }]}>{label}</ThemedText>
+                              {isDisabled && (
+                                <ThemedText style={{ color: colors.icon, fontSize: 12, marginLeft: 6 }}>(coming soon)</ThemedText>
+                              )}
+                            </Pressable>
+                          );
+                        })}
+
+                        <View style={[styles.modalActions, { marginTop: 8 }]}>
+                          <Pressable
+                            style={[styles.modalButton, { borderColor: colors.border }]}
+                            onPress={() => {
+                              setPendingSplitMode(splitMode);
+                              setExpenseStep('details');
+                            }}>
+                            <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
+                          </Pressable>
+                          <Pressable
+                            style={[styles.modalButton, styles.modalPrimaryButton, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                            onPress={() => {
+                              setSplitMode(pendingSplitMode);
+                              if (pendingSplitMode === 'none') setSplitWith([]);
+                              if (pendingSplitMode === 'even') {
+                                setExpenseStep('split-members');
+                              } else {
+                                setExpenseStep('details');
+                              }
+                            }}>
+                            <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Confirm</ThemedText>
+                          </Pressable>
+                        </View>
+                      </View>
+                    </View>
+                  </Modal>
+
+                  {/* Step 3: Member selection (even split) */}
+                  <Modal visible={expenseStep === 'split-members'} transparent animationType="slide">
+                    <View style={styles.modalOverlay}>
+                      <View style={[styles.modalCard, { backgroundColor: colors.surface, maxHeight: '70%' }]}>
+                        <ThemedText style={styles.modalTitle}>Split With</ThemedText>
+                        {splitWith.length > 0 && (
+                          <ThemedText style={{ color: colors.primary, fontSize: 13, marginBottom: 8, textAlign: 'center', fontWeight: '600' }}>
+                            {expenseCurrency} {((Number.parseFloat(expenseAmount) || 0) / (splitWith.length + 1)).toFixed(2)} per person
+                          </ThemedText>
+                        )}
+                        <ScrollView style={{ marginBottom: 8 }}>
+                          {tripPeople
+                            .filter((p) => p.id !== uid)
+                            .map((p) => {
+                              const selected = splitWith.includes(p.id);
+                              return (
+                                <Pressable
+                                  key={p.id}
+                                  style={[styles.currencyRow, { borderBottomColor: colors.border, alignItems: 'center' }]}
+                                  onPress={() => setSplitWith((prev) => selected ? prev.filter((id) => id !== p.id) : [...prev, p.id])}>
+                                  <View style={[styles.checkboxBox, { borderColor: selected ? colors.primary : colors.border, backgroundColor: selected ? colors.primary : colors.surface, marginRight: 10, flexShrink: 0 }]} />
+                                  <ThemedText style={{ color: colors.text, flex: 1 }}>{p.name}</ThemedText>
+                                  {selected && (
+                                    <ThemedText style={{ color: colors.icon, fontSize: 12 }}>
+                                      {expenseCurrency} {((Number.parseFloat(expenseAmount) || 0) / (splitWith.length + 1)).toFixed(2)}
+                                    </ThemedText>
+                                  )}
+                                </Pressable>
+                              );
+                            })}
+                        </ScrollView>
+                        <View style={styles.modalActions}>
+                          <Pressable
+                            style={[styles.modalButton, { borderColor: colors.border }]}
+                            onPress={() => {
+                              setSplitMode('none');
+                              setPendingSplitMode('none');
+                              setSplitWith([]);
+                              setExpenseStep('details');
+                            }}>
+                            <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
+                          </Pressable>
+                          <Pressable
+                            style={[styles.modalButton, styles.modalPrimaryButton, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                            onPress={() => setExpenseStep('details')}>
+                            <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Confirm</ThemedText>
+                          </Pressable>
+                        </View>
+                      </View>
+                    </View>
+                  </Modal>
 
                   {expenseError ? <ThemedText style={styles.modalErrorText}>{expenseError}</ThemedText> : null}
 
@@ -3206,12 +3356,17 @@ export default function TripDetailsScreen() {
                           return;
                         }
 
+                        const isSplit = splitMode !== 'none';
+                        const splitType: 'even' | undefined = splitMode === 'even' ? 'even' : undefined;
+
                         if (editingExpenseId) {
                           const expenseUpdates = {
                             name: expenseName.trim(),
                             amount,
                             currency,
-                            isSplit: expenseIsSplit,
+                            isSplit,
+                            splitType,
+                            splitWith: splitMode === 'even' ? splitWith : [],
                           };
                           if (sharedTrip) {
                             updateSharedExpense(sharedTrip.id, editingExpenseId, expenseUpdates);
@@ -3223,7 +3378,9 @@ export default function TripDetailsScreen() {
                             name: expenseName.trim(),
                             amount,
                             currency,
-                            isSplit: expenseIsSplit,
+                            isSplit,
+                            splitType,
+                            splitWith: splitMode === 'even' ? splitWith : [],
                           };
                           if (sharedTrip) {
                             addSharedExpense(sharedTrip.id, newExpense);

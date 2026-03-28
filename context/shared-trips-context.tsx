@@ -92,8 +92,8 @@ interface SharedTripsContextValue {
   updateSharedItineraryEvent: (sharedTripId: string, dayId: string, eventId: string, updates: { name: string; time: string; location?: string }) => Promise<void>;
   deleteSharedItineraryEvent: (sharedTripId: string, dayId: string, eventId: string) => Promise<void>;
 
-  addSharedExpense: (sharedTripId: string, expense: { name: string; amount: number; currency: string; isSplit: boolean }) => Promise<TripExpense>;
-  updateSharedExpense: (sharedTripId: string, expenseId: string, updates: { name: string; amount: number; currency: string; isSplit: boolean }) => Promise<void>;
+  addSharedExpense: (sharedTripId: string, expense: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }) => Promise<TripExpense>;
+  updateSharedExpense: (sharedTripId: string, expenseId: string, updates: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }) => Promise<void>;
   deleteSharedExpense: (sharedTripId: string, expenseId: string) => Promise<void>;
 
   addSharedJournalEntry: (sharedTripId: string, entry: { date: string; text: string; isShared?: boolean; authorId?: string }) => Promise<JournalEntry>;
@@ -572,13 +572,16 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
     };
 
     // ── Expenses CRUD ───────────────────────────────────────────────────
-    const addSharedExpense = async (sharedTripId: string, expense: { name: string; amount: number; currency: string; isSplit: boolean }): Promise<TripExpense> => {
+    const addSharedExpense = async (sharedTripId: string, expense: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }): Promise<TripExpense> => {
       const created: TripExpense = {
         id: `expense-${Date.now()}`,
         name: expense.name.trim(),
         amount: expense.amount,
         currency: expense.currency.trim().toUpperCase(),
         isSplit: expense.isSplit,
+        splitType: expense.splitType,
+        splitWith: expense.splitWith,
+        createdBy: userId!,
         createdAt: new Date().toISOString(),
       };
       const current = await readColumn<TripExpense[]>(sharedTripId, 'expenses');
@@ -589,7 +592,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       return created;
     };
 
-    const updateSharedExpense = async (sharedTripId: string, expenseId: string, updates: { name: string; amount: number; currency: string; isSplit: boolean }) => {
+    const updateSharedExpense = async (sharedTripId: string, expenseId: string, updates: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }) => {
       const current = await readColumn<TripExpense[]>(sharedTripId, 'expenses');
       const next = current.map((e) => (e.id === expenseId ? { ...e, ...updates, name: updates.name.trim(), currency: updates.currency.trim().toUpperCase() } : e));
       await writeColumn(sharedTripId, 'expenses', next);

@@ -53,6 +53,9 @@ export interface TripExpense {
   amount: number;
   currency: string;
   isSplit: boolean;
+  splitType?: 'even';
+  splitWith?: string[];
+  createdBy?: string;
   createdAt: string;
 }
 
@@ -98,12 +101,12 @@ interface TripsContextValue {
   expensesByTripId: Record<string, TripExpense[]>;
   addExpense: (
     tripId: string,
-    expense: { name: string; amount: number; currency: string; isSplit: boolean }
+    expense: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }
   ) => TripExpense;
   updateExpense: (
     tripId: string,
     expenseId: string,
-    updates: { name: string; amount: number; currency: string; isSplit: boolean }
+    updates: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }
   ) => void;
   deleteExpense: (tripId: string, expenseId: string) => void;
 
@@ -473,6 +476,8 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
         amount: expense.amount,
         currency: expense.currency.trim().toUpperCase(),
         isSplit: expense.isSplit,
+        splitType: expense.splitType,
+        splitWith: expense.splitWith,
         createdAt: new Date().toISOString(),
       };
 
@@ -502,6 +507,8 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
                 amount: nextAmount,
                 currency: nextCurrency,
                 isSplit: nextIsSplit,
+                splitType: updates.splitType,
+                splitWith: updates.splitWith,
               }
             : e
         );
