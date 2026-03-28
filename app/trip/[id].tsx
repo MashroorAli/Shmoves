@@ -5,6 +5,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as WebBrowser from 'expo-web-browser';
 import {
@@ -13,6 +14,7 @@ import {
   Alert,
   Animated,
   Dimensions,
+  FlatList,
   Linking,
   Modal,
   PanResponder,
@@ -32,7 +34,7 @@ import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { useSharedTrips } from '@/context/shared-trips-context';
+import { type PhotoEntry, useSharedTrips } from '@/context/shared-trips-context';
 import { type TicketAttachment, type TripHousing, useTrips } from '@/context/trips-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { supabase } from '@/config/supabase';
@@ -82,6 +84,71 @@ const CURRENCIES = [
   { code: 'COP', name: 'Colombian Peso' },
   { code: 'ARS', name: 'Argentine Peso' },
 ];
+
+// ─── PhotoTile ───────────────────────────────────────────────────────────────
+function PhotoTile({
+  photo,
+  size,
+  onPress,
+  onLongPress,
+  colors,
+  tripPeople,
+}: {
+  photo: PhotoEntry;
+  size: number;
+  onPress: () => void;
+  onLongPress: () => void;
+  colors: typeof import('@/constants/theme').Colors.light;
+  tripPeople: TripPerson[];
+}) {
+  const favCount = photo.favoritedBy?.length ?? 0;
+  return (
+    <Pressable onPress={onPress} onLongPress={onLongPress} style={{ width: size, height: size }}>
+      {photo.path ? (
+        <ExpoImage
+          source={{ uri: photo.path }}
+          style={{ width: size, height: size }}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+        />
+      ) : (
+        <View style={{ width: size, height: size, backgroundColor: colors.surfaceMuted, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator size="small" color={colors.icon} />
+        </View>
+      )}
+
+      {/* Favorite indicator overlay */}
+      {favCount > 0 && (
+        <View style={{ position: 'absolute', bottom: 4, right: 4, flexDirection: 'row', alignItems: 'center' }}>
+          {photo.favoritedBy!.slice(0, 3).map((favId, i) => {
+            const person = tripPeople.find((p) => p.id === favId);
+            return (
+              <View
+                key={favId}
+                style={{
+                  width: 14, height: 14, borderRadius: 7,
+                  backgroundColor: '#333', borderWidth: 1, borderColor: '#000',
+                  overflow: 'hidden', justifyContent: 'center', alignItems: 'center',
+                  marginLeft: i > 0 ? -4 : 0, zIndex: 3 - i,
+                }}>
+                {person?.avatarUri ? (
+                  <ExpoImage source={{ uri: person.avatarUri }} style={{ width: 14, height: 14 }} contentFit="cover" />
+                ) : (
+                  <ThemedText style={{ fontSize: 6, color: '#fff', lineHeight: 8 }}>
+                    {(person?.name ?? '?').charAt(0).toUpperCase()}
+                  </ThemedText>
+                )}
+              </View>
+            );
+          })}
+          <View style={{ marginLeft: 3, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 8, paddingHorizontal: 3, paddingVertical: 1 }}>
+            <ThemedText style={{ fontSize: 9, color: '#ff4d6d', lineHeight: 12 }}>♥</ThemedText>
+          </View>
+        </View>
+      )}
+    </Pressable>
+  );
+}
 
 // ─── SwipeableDayCard ────────────────────────────────────────────────────────
 const SWIPE_THRESHOLD = 40;
@@ -270,6 +337,9 @@ export default function TripDetailsScreen() {
     deleteSharedExpense,
     addSharedHousing,
     deleteSharedHousing,
+    addSharedPhoto,
+    deleteSharedPhoto,
+    toggleFavoritePhoto,
   } = useSharedTrips();
   const {
     trips,
@@ -651,6 +721,14 @@ export default function TripDetailsScreen() {
   const [splitMode, setSplitMode] = useState<'none' | 'even' | 'uneven'>('none');
   const [pendingSplitMode, setPendingSplitMode] = useState<'none' | 'even' | 'uneven'>('none');
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+
+  // ── Photos ──────────────────────────────────────────────────────────────
+  const [photosUploading, setPhotosUploading] = useState(false);
+  const [lightboxVisible, setLightboxVisible] = useState(false);
+  const [lightboxPhotos, setLightboxPhotos] = useState<PhotoEntry[]>([]);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
+  const lightboxFlatRef = useRef<FlatList<PhotoEntry>>(null);
+  const [photoFilter, setPhotoFilter] = useState<'all' | 'favorites' | 'date' | 'day'>('all');
 
   const [journalModalVisible, setJournalModalVisible] = useState(false);
   const [journalDate, setJournalDate] = useState('');
@@ -1321,6 +1399,68 @@ export default function TripDetailsScreen() {
     setExpenseStep('details');
     setExpenseError(null);
     setExpenseModalVisible(true);
+  };
+
+  // ── Photo upload ─────────────────────────────────────────────────────────
+  const handleAddPhotos = async () => {
+    if (!sharedTrip) return;
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow access to your photo library.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      quality: 0.8,
+      exif: true,
+    });
+    if (result.canceled || !result.assets.length) return;
+
+    setPhotosUploading(true);
+    try {
+      const cloudName = process.env.EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME!;
+      const uploadPreset = process.env.EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET!;
+
+      for (const asset of result.assets) {
+        const formData = new FormData();
+        formData.append('file', { uri: asset.uri, type: 'image/jpeg', name: 'photo.jpg' } as any);
+        formData.append('upload_preset', uploadPreset);
+
+        const response = await fetch(
+          `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+          { method: 'POST', body: formData }
+        );
+        const data = await response.json();
+
+        if (!response.ok || !data.secure_url) {
+          throw new Error(data.error?.message ?? 'Cloudinary upload failed');
+        }
+
+        // Extract EXIF date if available.
+        // EXIF stores dates as "YYYY:MM:DD HH:MM:SS" — colons as date separators,
+        // which JS Date can't parse. Convert to ISO "YYYY-MM-DD HH:MM:SS" first.
+        const parseExifDate = (raw: string): string | undefined => {
+          try {
+            const iso = raw.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
+            const d = new Date(iso);
+            return isNaN(d.getTime()) ? undefined : d.toISOString();
+          } catch {
+            return undefined;
+          }
+        };
+        const exifDate: string | undefined =
+          parseExifDate(asset.exif?.DateTimeOriginal ?? '') ??
+          parseExifDate(asset.exif?.DateTime ?? '') ??
+          undefined;
+
+        await addSharedPhoto(sharedTrip.id, data.secure_url, exifDate);
+      }
+    } catch (e: any) {
+      Alert.alert('Upload failed', e?.message ?? JSON.stringify(e) ?? 'Something went wrong.');
+    } finally {
+      setPhotosUploading(false);
+    }
   };
 
   const openJournalModal = (entry?: { id: string; date: string; text: string; isShared?: boolean }) => {
@@ -3441,13 +3581,272 @@ export default function TripDetailsScreen() {
             )}
           </ThemedView>
         );
-      case 'photos':
+      case 'photos': {
+        const allPhotos = sharedTrip?.photos ?? [];
+        const PHOTO_GAP = 2;
+        const screenW = Dimensions.get('window').width;
+        // Break out of the 24px horizontal padding on `styles.content` → full-width grid
+        const PHOTO_SIZE = Math.floor((screenW - PHOTO_GAP * 4) / 3);
+
+        const uniqueLiked = new Set(allPhotos.flatMap((p) => p.favoritedBy ?? [])).size;
+
+        // Apply filter + sort
+        const filteredPhotos = (() => {
+          let list = [...allPhotos];
+          if (photoFilter === 'favorites') {
+            list = list.filter((p) => p.favoritedBy?.includes(uid ?? ''));
+          }
+          if (photoFilter === 'day') {
+            list.sort((a, b) => {
+              const da = a.takenAt ?? a.timestamp;
+              const db = b.takenAt ?? b.timestamp;
+              return da.localeCompare(db);
+            });
+          } else {
+            list.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+          }
+          return list;
+        })();
+
+        // Group by date label
+        const grouped: { label: string; items: PhotoEntry[]; startIndex: number }[] = [];
+        let runningIdx = 0;
+        filteredPhotos.forEach((p) => {
+          const dateStr = photoFilter === 'day' ? (p.takenAt ?? p.timestamp) : p.timestamp;
+          const label = new Date(dateStr).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+          const last = grouped[grouped.length - 1];
+          if (last && last.label === label) {
+            last.items.push(p);
+          } else {
+            grouped.push({ label, items: [p], startIndex: runningIdx });
+          }
+          runningIdx++;
+        });
+
+        const currentLightboxPhoto = lightboxPhotos[lightboxIndex] ?? null;
+
         return (
-          <ThemedView style={styles.tabContent}>
-            <ThemedText style={styles.sectionTitle}>Photos</ThemedText>
-            <ThemedText>Your trip photos will appear here.</ThemedText>
+          <ThemedView style={[styles.tabContent, { marginHorizontal: -24, paddingTop: 8 }]}>
+            {/* Add Photos header row */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 14 }}>
+              <ThemedText style={{ flex: 1, fontSize: 13, color: colors.icon, paddingRight: 12 }}>
+                Upload photos to share with the group!
+              </ThemedText>
+              <Pressable
+                onPress={handleAddPhotos}
+                style={[
+                  styles.globalPlusButton,
+                  styles.globalPlusButtonPill,
+                  { position: 'relative', top: 0, right: 0, backgroundColor: colors.surface, borderColor: colors.border },
+                ]}>
+                <IconSymbol name="plus" size={20} color={colors.primary} />
+                <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
+                  Add Photos
+                </ThemedText>
+              </Pressable>
+            </View>
+
+            {/* Filter bar */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={{ marginBottom: 8 }}
+              contentContainerStyle={{ gap: 8, paddingHorizontal: 20 }}>
+              {(['all', 'favorites', 'date', 'day'] as const).map((f) => (
+                <Pressable
+                  key={f}
+                  onPress={() => setPhotoFilter(f)}
+                  style={[{ paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, borderWidth: 1 },
+                    photoFilter === f
+                      ? { backgroundColor: colors.primary, borderColor: colors.primary }
+                      : { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                  <ThemedText style={{ fontSize: 13, fontWeight: '600', color: photoFilter === f ? '#fff' : colors.text }}>
+                    {f === 'all' ? 'All' : f === 'favorites' ? '♥ Favorites' : f === 'date' ? 'Date Uploaded' : 'Day Taken'}
+                  </ThemedText>
+                </Pressable>
+              ))}
+            </ScrollView>
+
+            {/* Summary line — only shown when there are photos */}
+            {allPhotos.length > 0 && (
+              <View style={{ paddingHorizontal: 20, marginBottom: 10 }}>
+                <ThemedText style={{ fontSize: 12, color: colors.icon }}>
+                  {`${allPhotos.length} photo${allPhotos.length !== 1 ? 's' : ''}${uniqueLiked > 0 ? ` · ${uniqueLiked} liked by the group` : ''}`}
+                </ThemedText>
+              </View>
+            )}
+
+            {photosUploading && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10, paddingHorizontal: 20 }}>
+                <ActivityIndicator size="small" color={colors.primary} />
+                <ThemedText style={{ color: colors.icon, fontSize: 13 }}>Uploading…</ThemedText>
+              </View>
+            )}
+
+            {filteredPhotos.length === 0 && !photosUploading ? (
+              <View style={{ paddingHorizontal: 20 }}>
+                <ThemedText style={styles.emptyText}>
+                  {photoFilter === 'favorites' ? 'No favorites yet. Tap ♥ on any photo.' : 'No photos yet. Tap + to add some.'}
+                </ThemedText>
+              </View>
+            ) : (
+              grouped.map((group) => (
+                <View key={group.label} style={{ marginBottom: 16 }}>
+                  <ThemedText style={{ fontSize: 12, fontWeight: '600', color: colors.icon, marginBottom: 4, paddingHorizontal: 20 }}>
+                    {group.label}
+                  </ThemedText>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: PHOTO_GAP, paddingHorizontal: PHOTO_GAP }}>
+                    {group.items.map((p, localIdx) => (
+                      <PhotoTile
+                        key={p.id}
+                        photo={p}
+                        size={PHOTO_SIZE}
+                        colors={colors}
+                        tripPeople={tripPeople}
+                        onPress={() => {
+                          setLightboxPhotos(filteredPhotos);
+                          setLightboxIndex(group.startIndex + localIdx);
+                          setLightboxVisible(true);
+                        }}
+                        onLongPress={() => {
+                          setLightboxPhotos(filteredPhotos);
+                          setLightboxIndex(group.startIndex + localIdx);
+                          setLightboxVisible(true);
+                        }}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ))
+            )}
+
+            {/* Lightbox Modal */}
+            <Modal visible={lightboxVisible} transparent animationType="fade" statusBarTranslucent>
+              <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.97)' }}>
+                {/* Header row */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 56, paddingHorizontal: 20, paddingBottom: 8 }}>
+                  <ThemedText style={{ color: '#666', fontSize: 13 }}>
+                    {lightboxIndex + 1} / {lightboxPhotos.length}
+                  </ThemedText>
+                  <Pressable style={{ padding: 8 }} onPress={() => setLightboxVisible(false)}>
+                    <IconSymbol name="xmark" size={22} color="#fff" />
+                  </Pressable>
+                </View>
+
+                {/* Swipeable image pager */}
+                <FlatList<PhotoEntry>
+                  ref={lightboxFlatRef}
+                  data={lightboxPhotos}
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  initialScrollIndex={lightboxIndex}
+                  keyExtractor={(item) => item.id}
+                  getItemLayout={(_, index) => ({ length: screenW, offset: screenW * index, index })}
+                  onMomentumScrollEnd={(e) => {
+                    const newIdx = Math.round(e.nativeEvent.contentOffset.x / screenW);
+                    setLightboxIndex(newIdx);
+                  }}
+                  style={{ flex: 1 }}
+                  renderItem={({ item }) => (
+                    <View style={{ width: screenW, flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                      <ExpoImage
+                        source={{ uri: item.path }}
+                        style={{ width: screenW, height: screenW * 1.25 }}
+                        contentFit="contain"
+                        cachePolicy="memory-disk"
+                      />
+                      <View style={{ marginTop: 10, alignItems: 'center', gap: 2 }}>
+                        <ThemedText style={{ color: '#ccc', fontSize: 13 }}>
+                          {tripPeople.find((p) => p.id === item.uploadedBy)?.name ?? 'Unknown'}
+                        </ThemedText>
+                        <ThemedText style={{ color: '#555', fontSize: 12 }}>
+                          {new Date(item.takenAt ?? item.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                        </ThemedText>
+                      </View>
+                    </View>
+                  )}
+                />
+
+                {/* Action bar */}
+                {currentLightboxPhoto && (
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingTop: 22, paddingBottom: 22 + insets.bottom, paddingHorizontal: 32, borderTopWidth: 1, borderTopColor: '#222' }}>
+                    {/* Favorite */}
+                    <Pressable
+                      style={{ alignItems: 'center', gap: 4 }}
+                      onPress={async () => {
+                        if (!sharedTrip) return;
+                        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                        toggleFavoritePhoto(sharedTrip.id, currentLightboxPhoto.id);
+                        // Optimistically update local copy so UI reflects immediately
+                        setLightboxPhotos((prev) =>
+                          prev.map((ph) => {
+                            if (ph.id !== currentLightboxPhoto.id) return ph;
+                            const already = ph.favoritedBy?.includes(uid ?? '') ?? false;
+                            return {
+                              ...ph,
+                              favoritedBy: already
+                                ? (ph.favoritedBy ?? []).filter((x) => x !== uid)
+                                : [...(ph.favoritedBy ?? []), uid ?? ''],
+                            };
+                          })
+                        );
+                      }}>
+                      <IconSymbol
+                        name={currentLightboxPhoto.favoritedBy?.includes(uid ?? '') ? 'heart.fill' : 'heart'}
+                        size={30}
+                        color={currentLightboxPhoto.favoritedBy?.includes(uid ?? '') ? '#ff4d6d' : '#fff'}
+                      />
+                      <ThemedText style={{ color: '#aaa', fontSize: 11 }}>
+                        {(currentLightboxPhoto.favoritedBy?.length ?? 0) > 0
+                          ? `${currentLightboxPhoto.favoritedBy!.length} liked`
+                          : 'Like'}
+                      </ThemedText>
+                    </Pressable>
+
+                    {/* Save */}
+                    <Pressable
+                      style={{ alignItems: 'center', gap: 4 }}
+                      onPress={async () => {
+                        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        Linking.openURL(currentLightboxPhoto.path);
+                      }}>
+                      <IconSymbol name="arrow.down.circle" size={30} color="#fff" />
+                      <ThemedText style={{ color: '#aaa', fontSize: 11 }}>Save</ThemedText>
+                    </Pressable>
+
+                    {/* Delete */}
+                    <Pressable
+                      style={{ alignItems: 'center', gap: 4 }}
+                      onPress={() => {
+                        Alert.alert('Delete photo?', 'This cannot be undone.', [
+                          { text: 'Cancel', style: 'cancel' },
+                          {
+                            text: 'Delete', style: 'destructive', onPress: async () => {
+                              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                              if (!sharedTrip) return;
+                              deleteSharedPhoto(sharedTrip.id, currentLightboxPhoto.id);
+                              const next = lightboxPhotos.filter((ph) => ph.id !== currentLightboxPhoto.id);
+                              if (next.length === 0) {
+                                setLightboxVisible(false);
+                              } else {
+                                setLightboxPhotos(next);
+                                setLightboxIndex((i) => Math.min(i, next.length - 1));
+                              }
+                            },
+                          },
+                        ]);
+                      }}>
+                      <IconSymbol name="trash" size={28} color="#ff4d6d" />
+                      <ThemedText style={{ color: '#aaa', fontSize: 11 }}>Delete</ThemedText>
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+            </Modal>
           </ThemedView>
         );
+      }
     }
   };
 
@@ -3608,7 +4007,7 @@ export default function TripDetailsScreen() {
           </ThemedView>
 
           <View style={styles.globalEditOverlay} pointerEvents="box-none">
-            {activeTab === 'overview' || activeTab === 'feed' || (activeTab === 'itinerary' && !editMode) ? null : (
+            {activeTab === 'overview' || activeTab === 'feed' || activeTab === 'photos' || (activeTab === 'itinerary' && !editMode) ? null : (
               <Pressable
                 style={[
                   styles.globalPlusButton,
@@ -3632,10 +4031,8 @@ export default function TripDetailsScreen() {
                     return;
                   }
                   if (activeTab === 'photos') {
-                    Alert.alert('Select photos', 'Photo picking will be added soon.', [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'OK' },
-                    ]);
+                    handleAddPhotos();
+                    return;
                   }
                 }}>
                 <IconSymbol name="plus" size={22} color={colors.primary} />

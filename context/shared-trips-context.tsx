@@ -42,6 +42,16 @@ export interface PendingInvite {
   memberRowId: string;
 }
 
+export interface PhotoEntry {
+  id: string;
+  path: string;       // Cloudinary secure_url
+  uploadedBy: string; // userId
+  caption?: string;
+  timestamp: string;  // upload time
+  takenAt?: string;   // EXIF DateTimeOriginal
+  favoritedBy?: string[]; // userIds who favorited
+}
+
 export interface SharedTripData {
   id: string; // shared_trips UUID
   trip: Trip;
@@ -51,6 +61,7 @@ export interface SharedTripData {
   housing: TripHousing[];
   journal: JournalEntry[];
   feed: FeedEntry[];
+  photos: PhotoEntry[];
   members: TripMember[];
   ownerId: string;
 }
@@ -102,6 +113,10 @@ interface SharedTripsContextValue {
 
   addSharedHousing: (sharedTripId: string, housing: Omit<TripHousing, 'id'>) => Promise<TripHousing>;
   deleteSharedHousing: (sharedTripId: string, housingId: string) => Promise<void>;
+
+  addSharedPhoto: (sharedTripId: string, path: string, takenAt?: string) => Promise<PhotoEntry>;
+  deleteSharedPhoto: (sharedTripId: string, photoId: string) => Promise<void>;
+  toggleFavoritePhoto: (sharedTripId: string, photoId: string) => Promise<void>;
 }
 
 const SharedTripsContext = createContext<SharedTripsContextValue | undefined>(undefined);
@@ -227,6 +242,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
               housing: (row.housing as TripHousing[]) ?? [],
               journal: (row.journal as JournalEntry[]) ?? [],
               feed: (row.feed as FeedEntry[]) ?? [],
+              photos: (row.photos as PhotoEntry[]) ?? [],
               members: tripMembers,
               ownerId: row.owner_id,
             };
@@ -664,6 +680,43 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       appendFeedEntry(sharedTripId, { actorId: userId!, action: 'removed', section: 'Housing', timestamp: new Date().toISOString() });
     };
 
+    // ── Photos CRUD ─────────────────────────────────────────────────────────
+    const addSharedPhoto = async (sharedTripId: string, path: string, takenAt?: string): Promise<PhotoEntry> => {
+      const entry: PhotoEntry = {
+        id: `photo-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        path,
+        uploadedBy: userId!,
+        timestamp: new Date().toISOString(),
+        takenAt,
+        favoritedBy: [],
+      };
+      const current = await readColumn<PhotoEntry[]>(sharedTripId, 'photos').catch(() => []);
+      const next = [entry, ...current];
+      await writeColumn(sharedTripId, 'photos', next);
+      updateLocalTrip(sharedTripId, (t) => ({ ...t, photos: next }));
+      appendFeedEntry(sharedTripId, { actorId: userId!, action: 'added', section: 'Photos', timestamp: new Date().toISOString() });
+      return entry;
+    };
+
+    const deleteSharedPhoto = async (sharedTripId: string, photoId: string) => {
+      const current = await readColumn<PhotoEntry[]>(sharedTripId, 'photos').catch(() => []);
+      const next = current.filter((p) => p.id !== photoId);
+      await writeColumn(sharedTripId, 'photos', next);
+      updateLocalTrip(sharedTripId, (t) => ({ ...t, photos: next }));
+    };
+
+    const toggleFavoritePhoto = async (sharedTripId: string, photoId: string) => {
+      const current = await readColumn<PhotoEntry[]>(sharedTripId, 'photos').catch(() => []);
+      const next = current.map((p) => {
+        if (p.id !== photoId) return p;
+        const favs = p.favoritedBy ?? [];
+        const isFav = favs.includes(userId!);
+        return { ...p, favoritedBy: isFav ? favs.filter((id) => id !== userId) : [...favs, userId!] };
+      });
+      await writeColumn(sharedTripId, 'photos', next);
+      updateLocalTrip(sharedTripId, (t) => ({ ...t, photos: next }));
+    };
+
     return {
       sharedTrips,
       pendingInvites,
@@ -695,6 +748,9 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       deleteSharedJournalEntry,
       addSharedHousing,
       deleteSharedHousing,
+      addSharedPhoto,
+      deleteSharedPhoto,
+      toggleFavoritePhoto,
     };
   }, [sharedTrips, pendingInvites, isLoading, refresh, userId, updateLocalTrip]);
 
