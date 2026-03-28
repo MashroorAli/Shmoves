@@ -217,7 +217,26 @@ export default function TripDetailsScreen() {
   const theme = useColorScheme() ?? 'light';
   const colors = Colors[theme];
   const { uid } = useAuth();
-  const { sharedTrips, migrateToShared, inviteToTrip, inviteByUsername } = useSharedTrips();
+  const {
+    sharedTrips,
+    migrateToShared,
+    inviteToTrip,
+    inviteByUsername,
+    addSharedFlight,
+    updateSharedFlight,
+    deleteSharedFlight,
+    addSharedItineraryDay,
+    addSharedItineraryEvent,
+    updateSharedItineraryDay,
+    deleteSharedItineraryDay,
+    updateSharedItineraryEvent,
+    deleteSharedItineraryEvent,
+    addSharedExpense,
+    updateSharedExpense,
+    deleteSharedExpense,
+    addSharedHousing,
+    deleteSharedHousing,
+  } = useSharedTrips();
   const {
     trips,
     flightsByTripId,
@@ -268,7 +287,8 @@ export default function TripDetailsScreen() {
       trip?.startDate &&
       trip?.endDate &&
       itineraryDays.length === 0 &&
-      !itineraryAutoPopulated.current
+      !itineraryAutoPopulated.current &&
+      !sharedTrip
     ) {
       itineraryAutoPopulated.current = true;
       const start = new Date(trip.startDate);
@@ -1748,7 +1768,7 @@ export default function TripDetailsScreen() {
                                       if (!tripId) return;
                                       Alert.alert('Remove flight?', 'This cannot be undone.', [
                                         { text: 'Cancel', style: 'cancel' },
-                                        { text: 'Remove', style: 'destructive', onPress: () => deleteFlight(tripId, f.id) },
+                                        { text: 'Remove', style: 'destructive', onPress: () => sharedTrip ? deleteSharedFlight(sharedTrip.id, f.id) : deleteFlight(tripId, f.id) },
                                       ]);
                                     }}>
                                     <ThemedText
@@ -1846,7 +1866,7 @@ export default function TripDetailsScreen() {
                             if (!tripId) return;
                             Alert.alert('Remove housing?', 'This cannot be undone.', [
                               { text: 'Cancel', style: 'cancel' },
-                              { text: 'Remove', style: 'destructive', onPress: () => deleteHousing(tripId, h.id) },
+                              { text: 'Remove', style: 'destructive', onPress: () => sharedTrip ? deleteSharedHousing(sharedTrip.id, h.id) : deleteHousing(tripId, h.id) },
                             ]);
                           }}>
                           <ThemedText style={[styles.housingDeleteText, { color: colors.destructive }]}>Remove</ThemedText>
@@ -2005,13 +2025,18 @@ export default function TripDetailsScreen() {
                               setHousingError('Please select a start and end date.');
                               return;
                             }
-                            addHousing(tripId, {
+                            const housingPayload = {
                               location: loc,
-                              startDate: housingStartDate,
-                              endDate: housingEndDate,
+                              startDate: housingStartDate!,
+                              endDate: housingEndDate!,
                               checkInTime: housingCheckIn.trim() || undefined,
                               checkOutTime: housingCheckOut.trim() || undefined,
-                            });
+                            };
+                            if (sharedTrip) {
+                              addSharedHousing(sharedTrip.id, housingPayload);
+                            } else {
+                              addHousing(tripId, housingPayload);
+                            }
                             setHousingModalVisible(false);
                             setHousingError(null);
                           }}>
@@ -2431,9 +2456,17 @@ export default function TripDetailsScreen() {
                                 toCity: flightToCity.trim() || undefined,
                               };
                               if (editingFlightId) {
-                                updateFlight(tripId, editingFlightId, payload);
+                                if (sharedTrip) {
+                                  sharedTrip && updateSharedFlight(sharedTrip.id, editingFlightId, payload);
+                                } else {
+                                  updateFlight(tripId, editingFlightId, payload);
+                                }
                               } else {
-                                addFlight(tripId, payload);
+                                if (sharedTrip) {
+                                  addSharedFlight(sharedTrip.id, payload);
+                                } else {
+                                  addFlight(tripId, payload);
+                                }
                               }
                               setFlightModalVisible(false);
                               setFlightError(null);
@@ -2473,7 +2506,7 @@ export default function TripDetailsScreen() {
                         colors={colors}
                         onDelete={() => {
                           if (!tripId) return;
-                          deleteItineraryDay(tripId, day.id);
+                          sharedTrip ? deleteSharedItineraryDay(sharedTrip.id, day.id) : deleteItineraryDay(tripId, day.id);
                           setExpandedDayIds((prev) => {
                             const next = new Set(prev);
                             next.delete(day.id);
@@ -2560,7 +2593,7 @@ export default function TripDetailsScreen() {
                                                 {
                                                   text: 'Delete',
                                                   style: 'destructive',
-                                                  onPress: () => deleteItineraryEvent(tripId, day.id, e.id),
+                                                  onPress: () => sharedTrip ? deleteSharedItineraryEvent(sharedTrip.id, day.id, e.id) : deleteItineraryEvent(tripId, day.id, e.id),
                                                 },
                                               ]);
                                             }}>
@@ -2723,7 +2756,7 @@ export default function TripDetailsScreen() {
                         const label = dayName.trim();
 
                         if (editingDayId) {
-                          updateItineraryDay(tripId, editingDayId, label);
+                          sharedTrip ? updateSharedItineraryDay(sharedTrip.id, editingDayId, label) : updateItineraryDay(tripId, editingDayId, label);
                           setDayModalVisible(false);
                           setDayName('');
                           setEditingDayId(null);
@@ -2735,13 +2768,19 @@ export default function TripDetailsScreen() {
                           Alert.alert('Day already exists', 'A day for this date has already been added.');
                           return;
                         }
-                        const day = addItineraryDay(tripId, label, dateArg);
+                        if (sharedTrip) {
+                          addSharedItineraryDay(sharedTrip.id, label, dateArg).then((day) => {
+                            setExpandedDayIds((prev) => new Set(prev).add(day.id));
+                          });
+                        } else {
+                          const day = addItineraryDay(tripId, label, dateArg);
+                          setExpandedDayIds((prev) => new Set(prev).add(day.id));
+                        }
                         setDayModalVisible(false);
                         setDayName('');
                         setDayDatePickerVisible(false);
                         setDayDateDraft(new Date());
                         setEditingDayId(null);
-                        setExpandedDayIds((prev) => new Set(prev).add(day.id));
                       }}>
                       <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Save</ThemedText>
                     </Pressable>
@@ -2877,15 +2916,27 @@ export default function TripDetailsScreen() {
                         const notes = eventNotes.trim();
 
                         if (editingEventId) {
-                          updateItineraryEvent(tripId, selectedDayId, editingEventId, {
-                            name,
-                            time,
-                            location: location ? location : undefined,
-                            notes: notes ? notes : undefined,
-                            tickets: eventTickets,
-                          });
+                          if (sharedTrip) {
+                            updateSharedItineraryEvent(sharedTrip.id, selectedDayId, editingEventId, {
+                              name,
+                              time,
+                              location: location ? location : undefined,
+                            });
+                          } else {
+                            updateItineraryEvent(tripId, selectedDayId, editingEventId, {
+                              name,
+                              time,
+                              location: location ? location : undefined,
+                              notes: notes ? notes : undefined,
+                              tickets: eventTickets,
+                            });
+                          }
                         } else {
-                          addItineraryEvent(tripId, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets);
+                          if (sharedTrip) {
+                            addSharedItineraryEvent(sharedTrip.id, selectedDayId, name, time, location ? location : undefined);
+                          } else {
+                            addItineraryEvent(tripId, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets);
+                          }
                         }
 
                         setEventModalVisible(false);
@@ -2985,7 +3036,7 @@ export default function TripDetailsScreen() {
                                 {
                                   text: 'Delete',
                                   style: 'destructive',
-                                  onPress: () => deleteExpense(tripId, e.id),
+                                  onPress: () => sharedTrip ? deleteSharedExpense(sharedTrip.id, e.id) : deleteExpense(tripId, e.id),
                                 },
                               ]);
                             }}>
@@ -3085,19 +3136,29 @@ export default function TripDetailsScreen() {
                         }
 
                         if (editingExpenseId) {
-                          updateExpense(tripId, editingExpenseId, {
+                          const expenseUpdates = {
                             name: expenseName.trim(),
                             amount,
                             currency,
                             isSplit: expenseIsSplit,
-                          });
+                          };
+                          if (sharedTrip) {
+                            updateSharedExpense(sharedTrip.id, editingExpenseId, expenseUpdates);
+                          } else {
+                            updateExpense(tripId, editingExpenseId, expenseUpdates);
+                          }
                         } else {
-                          addExpense(tripId, {
+                          const newExpense = {
                             name: expenseName.trim(),
                             amount,
                             currency,
                             isSplit: expenseIsSplit,
-                          });
+                          };
+                          if (sharedTrip) {
+                            addSharedExpense(sharedTrip.id, newExpense);
+                          } else {
+                            addExpense(tripId, newExpense);
+                          }
                         }
 
                         setExpenseModalVisible(false);
