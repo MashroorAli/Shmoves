@@ -269,10 +269,10 @@ export default function TripDetailsScreen() {
   );
   const trip = id ? (trips.find((t) => t.id === id) ?? sharedTrip?.trip) : undefined;
   const tripId = id;
-  const flights = tripId ? (flightsByTripId[tripId]?.length ? flightsByTripId[tripId] : (sharedTrip?.flights ?? [])) : [];
-  const itineraryDays = tripId ? (itineraryByTripId[tripId]?.length ? itineraryByTripId[tripId] : (sharedTrip?.itinerary ?? [])) : [];
-  const expenses = tripId ? (expensesByTripId[tripId]?.length ? expensesByTripId[tripId] : (sharedTrip?.expenses ?? [])) : [];
-  const journalEntries = tripId ? (journalByTripId[tripId]?.length ? journalByTripId[tripId] : (sharedTrip?.journal ?? [])) : [];
+  const flights = tripId ? (sharedTrip ? (sharedTrip.flights ?? []) : (flightsByTripId[tripId] ?? [])) : [];
+  const itineraryDays = tripId ? (sharedTrip ? (sharedTrip.itinerary ?? []) : (itineraryByTripId[tripId] ?? [])) : [];
+  const expenses = tripId ? (sharedTrip ? (sharedTrip.expenses ?? []) : (expensesByTripId[tripId] ?? [])) : [];
+  const journalEntries = tripId ? (sharedTrip ? (sharedTrip.journal ?? []) : (journalByTripId[tripId] ?? [])) : [];
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
   const selectedDay = selectedDayId ? itineraryDays.find((d) => d.id === selectedDayId) : undefined;
   const [expandedDayIds, setExpandedDayIds] = useState<Set<string>>(new Set());
@@ -703,7 +703,7 @@ export default function TripDetailsScreen() {
         }))
     : [{ id: uid ?? 'me', name: 'Me' }];
 
-  const tripHousing: TripHousing[] = tripId ? housingByTripId[tripId] ?? [] : [];
+  const tripHousing: TripHousing[] = tripId ? (sharedTrip ? (sharedTrip.housing ?? []) : (housingByTripId[tripId] ?? [])) : [];
 
   const [housingModalVisible, setHousingModalVisible] = useState(false);
   const [housingLocation, setHousingLocation] = useState('');
