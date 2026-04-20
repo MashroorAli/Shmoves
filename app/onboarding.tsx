@@ -20,16 +20,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 
 import { ThemedText } from '@/components/themed-text';
-import { Colors } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/config/supabase';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useColors } from '@/hooks/use-colors';
 
 type Step = 'name' | 'username' | 'photo';
 
 export default function OnboardingScreen() {
-  const theme = useColorScheme() ?? 'light';
-  const colors = Colors[theme];
+  const colors = useColors();
   const insets = useSafeAreaInsets();
   const { uid } = useAuth();
 

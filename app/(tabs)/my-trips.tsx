@@ -1,24 +1,22 @@
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import React, { useMemo } from 'react';
-import { ActionSheetIOS, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActionSheetIOS, Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useSharedTrips } from '@/context/shared-trips-context';
 import { type Trip, useTrips } from '@/context/trips-context';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useColors } from '@/hooks/use-colors';
 
 export default function MyTripsScreen() {
   const router = useRouter();
   const { uid } = useAuth();
   const { trips, deleteTrip } = useTrips();
   const { sharedTrips, pendingInvites, acceptInvite, declineInvite, deleteSharedTrip, leaveSharedTrip } = useSharedTrips();
-  const theme = useColorScheme() ?? 'light';
-  const colors = Colors[theme];
+  const colors = useColors();
 
 
   const parseLocalDate = (value?: string) => {
@@ -123,26 +121,30 @@ export default function MyTripsScreen() {
     return { upcomingTrips: upcoming, pastTrips: past, daysUntilNext };
   }, [trips, sharedTrips]);
 
-  const handleTripLongPress = (trip: MergedTrip) => {
+  const handleTripOptions = (trip: MergedTrip) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     if (trip.isShared && trip.sharedTripId) {
       const sharedData = sharedTrips.find((st) => st.id === trip.sharedTripId);
       const isOwner = sharedData?.ownerId === uid;
-      const action = isOwner ? 'Delete Trip' : 'Leave Trip';
 
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          title: trip.destination,
-          message: formatTripMonthRange(trip.startDate, trip.endDate),
-          options: [action, 'Cancel'],
+          options: [isOwner ? 'Delete' : 'Leave', 'Cancel'],
           destructiveButtonIndex: 0,
           cancelButtonIndex: 1,
         },
         (index) => {
           if (index !== 0) return;
           if (isOwner) {
-            deleteSharedTrip(trip.sharedTripId!);
+            Alert.alert(
+              'Delete Trip?',
+              'This will permanently delete the trip for everyone in the group.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Delete', style: 'destructive', onPress: async () => { await deleteSharedTrip(trip.sharedTripId!); await deleteTrip(trip.id); } },
+              ],
+            );
           } else {
             leaveSharedTrip(trip.sharedTripId!);
           }
@@ -151,9 +153,7 @@ export default function MyTripsScreen() {
     } else {
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          title: trip.destination,
-          message: formatTripMonthRange(trip.startDate, trip.endDate),
-          options: ['Delete Trip', 'Cancel'],
+          options: ['Delete', 'Cancel'],
           destructiveButtonIndex: 0,
           cancelButtonIndex: 1,
         },
@@ -168,16 +168,17 @@ export default function MyTripsScreen() {
     <Pressable
       key={trip.sharedTripId ?? trip.id}
       style={[styles.tripCard, { borderColor: colors.border, backgroundColor: colors.surface }]}
-      onPress={() => handleTripPress(trip)}
-      onLongPress={() => handleTripLongPress(trip)}
-      delayLongPress={400}>
+      onPress={() => handleTripPress(trip)}>
       <View style={styles.tripCardTopRow}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
           <ThemedText style={styles.tripDestination}>{trip.destination}</ThemedText>
           {trip.isShared ? (
             <IconSymbol name="person.2.fill" size={14} color={colors.icon} />
           ) : null}
         </View>
+        <Pressable onPress={() => handleTripOptions(trip)} hitSlop={8} style={styles.dotsButton}>
+          <IconSymbol name="ellipsis" size={18} color={colors.icon} />
+        </Pressable>
       </View>
       <ThemedText style={styles.tripDates}>{formatTripMonthRange(trip.startDate, trip.endDate)}</ThemedText>
     </Pressable>
@@ -300,9 +301,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     opacity: 0.7,
   },
-  deleteText: {
-    fontSize: 13,
-    fontWeight: '700',
+  dotsButton: {
+    padding: 4,
   },
   sectionHeader: {
     marginTop: 12,

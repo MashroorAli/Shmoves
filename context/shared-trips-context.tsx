@@ -477,11 +477,15 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
     // ── Delete / Leave ──────────────────────────────────────────────────
     const deleteSharedTrip = async (sharedTripId: string) => {
       if (!userId) throw new Error('Not authenticated');
-      await supabase.from('trip_members').delete().eq('trip_id', sharedTripId);
-      await supabase.from('trip_invites').delete().eq('trip_id', sharedTripId);
+      // Remove from local state first so the real-time refresh that fires on
+      // each DELETE below doesn't restore the trip before all rows are gone.
+      setSharedTrips((prev) => prev.filter((t) => t.id !== sharedTripId));
+      // Delete shared_trips FIRST — when the realtime subscription fires on
+      // this event, refresh() will find no shared_trips row and keep state clean.
       const { error } = await supabase.from('shared_trips').delete().eq('id', sharedTripId);
       if (error) throw error;
-      setSharedTrips((prev) => prev.filter((t) => t.id !== sharedTripId));
+      await supabase.from('trip_members').delete().eq('trip_id', sharedTripId);
+      await supabase.from('trip_invites').delete().eq('trip_id', sharedTripId);
     };
 
     const leaveSharedTrip = async (sharedTripId: string) => {

@@ -3,8 +3,7 @@ import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useColors } from '@/hooks/use-colors';
 
 type ActivityItem = {
   id: string;
@@ -17,8 +16,7 @@ type ActivityItem = {
 };
 
 export default function ActivityScreen() {
-  const theme = useColorScheme() ?? 'light';
-  const colors = Colors[theme];
+  const colors = useColors();
 
   const items = useMemo<ActivityItem[]>(
     () => [

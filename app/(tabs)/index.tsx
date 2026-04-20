@@ -1,18 +1,16 @@
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { router } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors } from '@/constants/theme';
 import { useTrips } from '@/context/trips-context';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useColors } from '@/hooks/use-colors';
 
 export default function HomeScreen() {
   const { addTrip } = useTrips();
-  const theme = useColorScheme() ?? 'light';
-  const colors = Colors[theme];
+  const colors = useColors();
   const [destination, setDestination] = useState('');
   const [startDate, setStartDate] = useState<Date | undefined>(undefined);
   const [endDate, setEndDate] = useState<Date | undefined>(undefined);
@@ -22,46 +20,38 @@ export default function HomeScreen() {
   const [errors, setErrors] = useState<{ destination?: string; startDate?: string; endDate?: string }>({});
   const [showCityDropdown, setShowCityDropdown] = useState(false);
   const [cityQuery, setCityQuery] = useState('');
+  const [photonResults, setPhotonResults] = useState<string[]>([]);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const cities = [
-    'Bangkok, Thailand',
-    'Paris, France',
-    'Lisbon, Portugal',
-    'London, United Kingdom',
-    'Dubai, UAE',
-    'Singapore',
-    'New York City, USA',
-    'Hong Kong',
-    'Istanbul, Turkey',
-    'Kuala Lumpur, Malaysia',
-    'Tokyo, Japan',
-    'Antalya, Turkey',
-    'Seoul, South Korea',
-    'Osaka, Japan',
-    'Phuket, Thailand',
-    'Mecca, Saudi Arabia',
-    'Pattaya, Thailand',
-    'Shenzhen, China',
-    'Milan, Italy',
-    'Taipei, Taiwan',
-    'Rome, Italy',
-    'Guangzhou, China',
-    'Delhi, India',
-    'Shanghai, China',
-    'Barcelona, Spain',
-    'Agra, India',
-  ];
-
-  const filteredCities = useMemo(() =>
-    cities.filter((city) =>
-      city.toLowerCase().includes(cityQuery.toLowerCase())
-    ), [cityQuery]
-  );
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const q = cityQuery.trim();
+    if (q.length < 2) {
+      setPhotonResults([]);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&layer=city&layer=state`
+        );
+        const json = await res.json();
+        const labels: string[] = (json.features ?? []).map((f: any) => {
+          const { name, country, state } = f.properties ?? {};
+          return [name, state !== name ? state : undefined, country].filter(Boolean).join(', ');
+        });
+        setPhotonResults([...new Set(labels)]);
+      } catch {
+        setPhotonResults([]);
+      }
+    }, 300);
+  }, [cityQuery]);
 
   const onCitySelect = (city: string) => {
     setDestination(city);
     setCityQuery(city);
     setShowCityDropdown(false);
+    setPhotonResults([]);
     if (errors.destination) {
       setErrors((prev) => ({ ...prev, destination: undefined }));
     }
@@ -77,12 +67,6 @@ export default function HomeScreen() {
   };
 
   const onDestinationBlur = () => {
-    // If the current value doesn't exactly match a city, clear it
-    if (cityQuery && !cities.includes(cityQuery)) {
-      setCityQuery('');
-      setDestination('');
-      setErrors((prev) => ({ ...prev, destination: 'Please select a city from the list.' }));
-    }
     setShowCityDropdown(false);
   };
 
@@ -159,10 +143,10 @@ export default function HomeScreen() {
             onFocus={() => setShowCityDropdown(cityQuery.trim().length > 0)}
             onBlur={onDestinationBlur}
           />
-          {!!showCityDropdown && filteredCities.length > 0 && (
+          {!!showCityDropdown && photonResults.length > 0 && (
             <View style={[styles.cityDropdown, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <ScrollView style={{ maxHeight: 200 }} keyboardShouldPersistTaps="handled">
-                {filteredCities.map((city: string) => (
+                {photonResults.map((city: string) => (
                   <Pressable
                     key={city}
                     style={[styles.cityOption, { borderBottomColor: colors.surfaceMuted }]}

@@ -8,6 +8,7 @@ import React, { useEffect, useState } from 'react';
 import { Alert } from 'react-native';
 import 'react-native-reanimated';
 
+import { AccentProvider } from '@/context/accent-context';
 import { AuthProvider, useAuth } from '@/context/auth-context';
 import { SharedTripsProvider, useSharedTrips } from '@/context/shared-trips-context';
 import { TripsProvider } from '@/context/trips-context';
@@ -22,6 +23,7 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
 
   return (
+    <AccentProvider>
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AuthProvider>
         <RootLayoutGate>
@@ -37,6 +39,7 @@ export default function RootLayout() {
         </RootLayoutGate>
       </AuthProvider>
     </ThemeProvider>
+    </AccentProvider>
   );
 }
 

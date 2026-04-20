@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { supabase } from '@/config/supabase';
 
@@ -79,7 +79,7 @@ export interface JournalEntry {
 interface TripsContextValue {
   trips: Trip[];
   addTrip: (trip: Omit<Trip, 'id'>) => Trip;
-  deleteTrip: (tripId: string) => void;
+  deleteTrip: (tripId: string) => Promise<void>;
   flightsByTripId: Record<string, FlightInfo[]>;
   addFlight: (tripId: string, flight: Omit<FlightInfo, 'id'>) => FlightInfo;
   updateFlight: (tripId: string, flightId: string, flight: Omit<FlightInfo, 'id'>) => void;
@@ -148,9 +148,11 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
   const [journalByTripId, setJournalByTripId] = useState<Record<string, JournalEntry[]>>({});
   const [housingByTripId, setHousingByTripId] = useState<Record<string, TripHousing[]>>({});
   const [isHydrated, setIsHydrated] = useState(false);
-  // Only true when hydration completed successfully — prevents persist from
-  // overwriting DB with empty state on a failed read.
   const [hydrationOk, setHydrationOk] = useState(false);
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True while the persist effect is firing due to hydration (not a user action).
+  // Prevents writing stale data back to Supabase right after reading from it.
+  const skipPersistAfterHydration = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -180,6 +182,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
         if (error) throw error;
 
         if (!data) {
+          skipPersistAfterHydration.current = true;
           setTrips([]);
           setFlightsByTripId({});
           setItineraryByTripId({});
@@ -191,6 +194,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
         }
 
         const parsed = data.data as Partial<PersistedTripsState>;
+        skipPersistAfterHydration.current = true;
         setTrips(Array.isArray(parsed.trips) ? parsed.trips : []);
         const nextFlights =
           parsed.flightsByTripId && typeof parsed.flightsByTripId === 'object' ? parsed.flightsByTripId : undefined;
@@ -257,7 +261,16 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
     if (!userKey) return;
     if (!hydrationOk) return;
 
-    const persist = async () => {
+    // Skip the persist that fires immediately after hydration — we just read
+    // this data from Supabase so writing it back would create a stale write
+    // that can race with and overwrite a concurrent deleteTrip write.
+    if (skipPersistAfterHydration.current) {
+      skipPersistAfterHydration.current = false;
+      return;
+    }
+
+    if (persistTimer.current) clearTimeout(persistTimer.current);
+    persistTimer.current = setTimeout(async () => {
       const nextState: PersistedTripsState = {
         trips,
         flightsByTripId,
@@ -268,10 +281,12 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
       };
       await supabase
         .from('user_data')
-        .upsert({ user_id: userKey, data: nextState });
-    };
+        .upsert({ user_id: userKey, data: nextState }, { onConflict: 'user_id' });
+    }, 400);
 
-    persist();
+    return () => {
+      if (persistTimer.current) clearTimeout(persistTimer.current);
+    };
   }, [expensesByTripId, flightsByTripId, housingByTripId, hydrationOk, itineraryByTripId, journalByTripId, trips, userKey]);
 
   const value = useMemo<TripsContextValue>(() => {
@@ -287,38 +302,39 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
       return newTrip;
     };
 
-    const deleteTrip: TripsContextValue['deleteTrip'] = (tripId) => {
-      setTrips((prev) => prev.filter((t) => t.id !== tripId));
+    const deleteTrip: TripsContextValue['deleteTrip'] = async (tripId) => {
+      if (persistTimer.current) {
+        clearTimeout(persistTimer.current);
+        persistTimer.current = null;
+      }
 
-      setFlightsByTripId((prev) => {
-        if (!prev[tripId]) return prev;
-        const { [tripId]: _removed, ...rest } = prev;
-        return rest;
-      });
+      const newTrips = trips.filter((t) => t.id !== tripId);
+      const { [tripId]: _f, ...newFlights } = flightsByTripId;
+      const { [tripId]: _i, ...newItinerary } = itineraryByTripId;
+      const { [tripId]: _e, ...newExpenses } = expensesByTripId;
+      const { [tripId]: _j, ...newJournal } = journalByTripId;
+      const { [tripId]: _h, ...newHousing } = housingByTripId;
 
-      setItineraryByTripId((prev) => {
-        if (!prev[tripId]) return prev;
-        const { [tripId]: _removed, ...rest } = prev;
-        return rest;
-      });
+      if (userKey) {
+        await supabase.from('user_data').upsert({
+          user_id: userKey,
+          data: {
+            trips: newTrips,
+            flightsByTripId: newFlights,
+            itineraryByTripId: newItinerary,
+            expensesByTripId: newExpenses,
+            journalByTripId: newJournal,
+            housingByTripId: newHousing,
+          },
+        }, { onConflict: 'user_id' });
+      }
 
-      setExpensesByTripId((prev) => {
-        if (!prev[tripId]) return prev;
-        const { [tripId]: _removed, ...rest } = prev;
-        return rest;
-      });
-
-      setJournalByTripId((prev) => {
-        if (!prev[tripId]) return prev;
-        const { [tripId]: _removed, ...rest } = prev;
-        return rest;
-      });
-
-      setHousingByTripId((prev) => {
-        if (!prev[tripId]) return prev;
-        const { [tripId]: _removed, ...rest } = prev;
-        return rest;
-      });
+      setTrips(newTrips);
+      setFlightsByTripId(newFlights);
+      setItineraryByTripId(newItinerary);
+      setExpensesByTripId(newExpenses);
+      setJournalByTripId(newJournal);
+      setHousingByTripId(newHousing);
     };
 
     const normalizeFlight = (flight: Omit<FlightInfo, 'id'>): Omit<FlightInfo, 'id'> => ({
@@ -613,7 +629,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
       addHousing,
       deleteHousing,
     };
-  }, [expensesByTripId, flightsByTripId, housingByTripId, itineraryByTripId, journalByTripId, trips]);
+  }, [expensesByTripId, flightsByTripId, housingByTripId, hydrationOk, itineraryByTripId, journalByTripId, trips, userKey]);
 
   return <TripsContext.Provider value={value}>{children}</TripsContext.Provider>;
 }

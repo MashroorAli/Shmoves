@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -17,15 +18,18 @@ import { router } from 'expo-router';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors } from '@/constants/theme';
+import { ACCENT_PALETTES, type AccentKey } from '@/constants/theme';
+import { useAccent } from '@/context/accent-context';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/config/supabase';
+import { useColors } from '@/hooks/use-colors';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function ProfileScreen() {
   const { uid, signOut } = useAuth();
-  const theme = useColorScheme() ?? 'light';
-  const colors = Colors[theme];
+  const colors = useColors();
+  const scheme = useColorScheme() ?? 'light';
+  const { accentKey, setAccent } = useAccent();
 
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
@@ -45,21 +49,31 @@ export default function ProfileScreen() {
     setUsernameError(null);
   };
 
+  const PROFILE_CACHE_KEY = uid ? `PROFILE_CACHE_${uid}` : null;
+
+  const applyProfile = (data: { name: string | null; username: string | null; avatar_url: string | null }) => {
+    setName(data.name ?? '');
+    setUsername(data.username ?? '');
+    setAvatarUri(data.avatar_url ?? null);
+    setSavedName(data.name ?? '');
+    setSavedUsername(data.username ?? '');
+    setSavedAvatarUri(data.avatar_url ?? null);
+  };
+
   useEffect(() => {
-    if (!uid) return;
+    if (!uid || !PROFILE_CACHE_KEY) return;
     (async () => {
+      const cached = await AsyncStorage.getItem(PROFILE_CACHE_KEY);
+      if (cached) applyProfile(JSON.parse(cached));
+
       const { data } = await supabase
         .from('profiles')
         .select('name, username, avatar_url')
         .eq('id', uid)
         .single();
       if (data) {
-        setName(data.name ?? '');
-        setUsername(data.username ?? '');
-        setAvatarUri(data.avatar_url ?? null);
-        setSavedName(data.name ?? '');
-        setSavedUsername(data.username ?? '');
-        setSavedAvatarUri(data.avatar_url ?? null);
+        applyProfile(data);
+        AsyncStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(data));
       }
     })();
   }, [uid]);
@@ -194,13 +208,23 @@ export default function ProfileScreen() {
       return;
     }
 
-    setSavedName(name.trim());
+    const newName = name.trim();
+    const newAvatarUrl = updates.avatar_url !== undefined ? updates.avatar_url : avatarUri;
+    setSavedName(newName);
     setSavedUsername(username);
     if (updates.avatar_url !== undefined) {
       setSavedAvatarUri(updates.avatar_url);
       if (updates.avatar_url) setAvatarUri(updates.avatar_url);
     } else {
       setSavedAvatarUri(avatarUri);
+    }
+
+    if (PROFILE_CACHE_KEY) {
+      AsyncStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify({
+        name: newName,
+        username,
+        avatar_url: newAvatarUrl ?? null,
+      }));
     }
 
     setEditing(false);
@@ -300,6 +324,30 @@ export default function ProfileScreen() {
           </Pressable>
         </View>
       )}
+
+      <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+      {/* Accent Color */}
+      <ThemedText style={[styles.label, { color: colors.icon }]}>Accent Color</ThemedText>
+      <View style={styles.swatchRow}>
+        {(Object.keys(ACCENT_PALETTES) as AccentKey[]).map((key) => {
+          const swatchColor = ACCENT_PALETTES[key][scheme].primary;
+          const isSelected = accentKey === key;
+          return (
+            <Pressable
+              key={key}
+              onPress={() => setAccent(key)}
+              style={[
+                styles.swatch,
+                { backgroundColor: swatchColor },
+                isSelected && { borderWidth: 3, borderColor: colors.text },
+              ]}
+            >
+              {isSelected && <View style={styles.swatchDot} />}
+            </Pressable>
+          );
+        })}
+      </View>
 
       <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
@@ -459,5 +507,24 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#d33',
+  },
+  swatchRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  swatch: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  swatchDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: 'rgba(255,255,255,0.85)',
   },
 });

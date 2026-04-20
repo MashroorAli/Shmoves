@@ -7,6 +7,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
+import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
 import {
   ActionSheetIOS,
@@ -32,11 +33,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { type PhotoEntry, useSharedTrips } from '@/context/shared-trips-context';
 import { type TicketAttachment, type TripHousing, useTrips } from '@/context/trips-context';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useColors } from '@/hooks/use-colors';
 import { supabase } from '@/config/supabase';
 
 type CachedHeroImages = {
@@ -315,8 +315,7 @@ export default function TripDetailsScreen() {
     id?: string;
   }>();
   const router = useRouter();
-  const theme = useColorScheme() ?? 'light';
-  const colors = Colors[theme];
+  const colors = useColors();
   const { uid } = useAuth();
   const {
     sharedTrips,
@@ -1539,6 +1538,22 @@ export default function TripDetailsScreen() {
 
   // AviationStack uses YYYY-MM-DD format natively — no transformation needed.
 
+  const fetchAndCopyAirportAddress = async (code: string, city: string) => {
+    try {
+      const q = encodeURIComponent(`${city} Airport ${code}`);
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1`, {
+        headers: { 'Accept-Language': 'en', 'User-Agent': 'Shmoves/1.0' },
+      });
+      const json = await res.json();
+      const address: string = json[0]?.display_name ?? `${city} Airport`;
+      await Clipboard.setStringAsync(address);
+      Alert.alert('Copied!', address);
+    } catch {
+      await Clipboard.setStringAsync(`${city} Airport`);
+      Alert.alert('Copied!', `${city} Airport`);
+    }
+  };
+
   const airportCityMap: Record<string, string> = {
     JFK: 'New York', LGA: 'New York', EWR: 'Newark', LAX: 'Los Angeles', ORD: 'Chicago',
     ATL: 'Atlanta', DFW: 'Dallas', DEN: 'Denver', SFO: 'San Francisco', SEA: 'Seattle',
@@ -1822,8 +1837,7 @@ export default function TripDetailsScreen() {
     const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     const startOfTrip = new Date(startDateObj.getFullYear(), startDateObj.getMonth(), startDateObj.getDate());
     const diffMs = startOfTrip.getTime() - startOfToday.getTime();
-    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-    return Math.max(0, diffDays);
+    return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
   };
 
   const tabs = [
@@ -1849,6 +1863,13 @@ export default function TripDetailsScreen() {
 
         const countdownBase = sortedFlights[0]?.departureDate ?? trip?.startDate;
         const daysUntilTrip = getDaysUntilTrip(countdownBase);
+        const tripEndDateObj = parseTripDate(trip?.endDate);
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        const isOnTrip =
+          daysUntilTrip <= 0 &&
+          tripEndDateObj !== null &&
+          new Date(tripEndDateObj.getFullYear(), tripEndDateObj.getMonth(), tripEndDateObj.getDate()) >= startOfToday;
         const nextEvent = getNextItineraryEvent();
         const now = new Date();
         const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -1869,7 +1890,13 @@ export default function TripDetailsScreen() {
           <ThemedView style={styles.tabContent}>
             <ThemedText style={styles.sectionTitle}>Trip Overview</ThemedText>
             <ThemedText style={styles.countdownText}>
-              {daysUntilTrip === 1 ? 'You fly out tomorrow!' : `There are ${daysUntilTrip} days until the trip!`}
+              {isOnTrip
+                ? 'You should be on the trip right now!'
+                : daysUntilTrip < 0
+                  ? `This trip was ${Math.abs(daysUntilTrip)} day${Math.abs(daysUntilTrip) === 1 ? '' : 's'} ago.`
+                  : daysUntilTrip === 1
+                    ? 'You fly out tomorrow!'
+                    : `There are ${daysUntilTrip} days until the trip!`}
             </ThemedText>
 
             <ThemedView style={[styles.flightCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
@@ -1917,17 +1944,43 @@ export default function TripDetailsScreen() {
                               key={f.id}
                               style={[styles.flightItem, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
                               <View style={styles.flightRouteRow}>
-                                <View style={styles.flightAirportBlock}>
+                                <Pressable
+                                  style={({ pressed }) => [styles.flightAirportBlock, { opacity: pressed ? 0.6 : 1 }]}
+                                  onPress={() => {
+                                    const code = f.from;
+                                    if (!code || code === '—') return;
+                                    const city = f.fromCity ?? code;
+                                    const query = encodeURIComponent(`${city} Airport`);
+                                    Alert.alert(code, `Navigate to ${city} Airport`, [
+                                      { text: 'Google Maps', onPress: () => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${query}`) },
+                                      { text: 'Apple Maps', onPress: () => Linking.openURL(`maps://?q=${query}`) },
+                                      { text: 'Copy Address', onPress: () => fetchAndCopyAirportAddress(code, city) },
+                                      { text: 'Cancel', style: 'cancel' },
+                                    ]);
+                                  }}>
                                   <ThemedText style={styles.flightAirportCode}>{f.from ?? '—'}</ThemedText>
                                   <ThemedText style={styles.flightAirportCity}>{f.fromCity ?? ''}</ThemedText>
-                                </View>
+                                </Pressable>
 
                                 <ThemedText style={[styles.flightArrow, { color: colors.primary }]}>→</ThemedText>
 
-                                <View style={[styles.flightAirportBlock, styles.flightAirportBlockRight]}>
+                                <Pressable
+                                  style={({ pressed }) => [styles.flightAirportBlock, styles.flightAirportBlockRight, { opacity: pressed ? 0.6 : 1 }]}
+                                  onPress={() => {
+                                    const code = f.to;
+                                    if (!code || code === '—') return;
+                                    const city = f.toCity ?? code;
+                                    const query = encodeURIComponent(`${city} Airport`);
+                                    Alert.alert(code, `Navigate to ${city} Airport`, [
+                                      { text: 'Google Maps', onPress: () => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${query}`) },
+                                      { text: 'Apple Maps', onPress: () => Linking.openURL(`maps://?q=${query}`) },
+                                      { text: 'Copy Address', onPress: () => fetchAndCopyAirportAddress(code, city) },
+                                      { text: 'Cancel', style: 'cancel' },
+                                    ]);
+                                  }}>
                                   <ThemedText style={styles.flightAirportCode}>{f.to ?? '—'}</ThemedText>
                                   <ThemedText style={styles.flightAirportCity}>{f.toCity ?? ''}</ThemedText>
-                                </View>
+                                </Pressable>
                               </View>
 
                               <ThemedText style={styles.flightTimeLine}>
@@ -2018,7 +2071,7 @@ export default function TripDetailsScreen() {
                           const query = encodeURIComponent(h.location);
                           Alert.alert(
                             h.location,
-                            'Open in maps',
+                            'Open in maps or copy address',
                             [
                               {
                                 text: 'Google Maps',
@@ -2027,6 +2080,10 @@ export default function TripDetailsScreen() {
                               {
                                 text: 'Apple Maps',
                                 onPress: () => Linking.openURL(`maps://?q=${query}`),
+                              },
+                              {
+                                text: 'Copy Address',
+                                onPress: () => Clipboard.setStringAsync(h.location),
                               },
                               { text: 'Cancel', style: 'cancel' },
                             ],

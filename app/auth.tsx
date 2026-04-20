@@ -18,8 +18,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useColors } from '@/hooks/use-colors';
 import { supabase } from '@/config/supabase';
 
 const OTP_LENGTH = 6;
@@ -27,7 +27,7 @@ type Step = 'home' | 'email' | 'otp';
 
 export default function AuthScreen() {
   const theme = useColorScheme() ?? 'light';
-  const colors = Colors[theme];
+  const colors = useColors();
   const insets = useSafeAreaInsets();
 
   const [step, setStep] = useState<Step>('home');
