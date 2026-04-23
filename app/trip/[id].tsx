@@ -32,11 +32,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { TripPrivacyCard } from '@/components/trip-privacy-card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { CURRENCIES, inferDestinationCurrency } from '@/constants/currencies';
 import { useAuth } from '@/context/auth-context';
+import { useHomeCurrency } from '@/context/home-currency-context';
 import { type PhotoEntry, useSharedTrips } from '@/context/shared-trips-context';
 import { type TicketAttachment, type TripHousing, useTrips } from '@/context/trips-context';
 import { useColors } from '@/hooks/use-colors';
+import { useTempUnit } from '@/context/temp-unit-context';
 import { supabase } from '@/config/supabase';
 
 type CachedHeroImages = {
@@ -51,39 +55,6 @@ type TripPerson = {
   avatarUri?: string;
 };
 
-// ─── Currencies ──────────────────────────────────────────────────────────────
-const CURRENCIES = [
-  { code: 'USD', name: 'US Dollar' },
-  { code: 'EUR', name: 'Euro' },
-  { code: 'GBP', name: 'British Pound' },
-  { code: 'CAD', name: 'Canadian Dollar' },
-  { code: 'AUD', name: 'Australian Dollar' },
-  { code: 'JPY', name: 'Japanese Yen' },
-  { code: 'CHF', name: 'Swiss Franc' },
-  { code: 'CNY', name: 'Chinese Yuan' },
-  { code: 'INR', name: 'Indian Rupee' },
-  { code: 'MXN', name: 'Mexican Peso' },
-  { code: 'BRL', name: 'Brazilian Real' },
-  { code: 'KRW', name: 'South Korean Won' },
-  { code: 'SGD', name: 'Singapore Dollar' },
-  { code: 'HKD', name: 'Hong Kong Dollar' },
-  { code: 'NOK', name: 'Norwegian Krone' },
-  { code: 'SEK', name: 'Swedish Krona' },
-  { code: 'DKK', name: 'Danish Krone' },
-  { code: 'NZD', name: 'New Zealand Dollar' },
-  { code: 'ZAR', name: 'South African Rand' },
-  { code: 'AED', name: 'UAE Dirham' },
-  { code: 'SAR', name: 'Saudi Riyal' },
-  { code: 'THB', name: 'Thai Baht' },
-  { code: 'MYR', name: 'Malaysian Ringgit' },
-  { code: 'IDR', name: 'Indonesian Rupiah' },
-  { code: 'PHP', name: 'Philippine Peso' },
-  { code: 'PLN', name: 'Polish Zloty' },
-  { code: 'TRY', name: 'Turkish Lira' },
-  { code: 'EGP', name: 'Egyptian Pound' },
-  { code: 'COP', name: 'Colombian Peso' },
-  { code: 'ARS', name: 'Argentine Peso' },
-];
 
 // ─── PhotoTile ───────────────────────────────────────────────────────────────
 function PhotoTile({
@@ -316,7 +287,9 @@ export default function TripDetailsScreen() {
   }>();
   const router = useRouter();
   const colors = useColors();
-  const { uid } = useAuth();
+  const { formatTemp } = useTempUnit();
+  const { homeCurrency, convertToHome } = useHomeCurrency();
+  const { uid, profileName, profileAvatarUrl } = useAuth();
   const {
     sharedTrips,
     migrateToShared,
@@ -765,26 +738,25 @@ export default function TripDetailsScreen() {
     outputRange: [1, 0],
     extrapolate: 'clamp',
   });
-  const stickyCardOpacity = scrollY.interpolate({
-    inputRange: [heroMaxHeight * 0.4, heroMaxHeight * 0.75],
-    outputRange: [0, 1],
-    extrapolate: 'clamp',
-  });
   const wrapperBgOpacity = scrollY.interpolate({
     inputRange: [0, heroMaxHeight * 0.3],
     outputRange: [0, 1],
     extrapolate: 'clamp',
   });
+  // Card only grows in during the final quarter of the hero scroll so it never
+  // overlaps the hero content — the sticky header pins at heroMaxHeight and by
+  // then the card is fully revealed.
   const cardAreaHeight = scrollY.interpolate({
-    inputRange: [heroMaxHeight * 0.2, heroMaxHeight * 0.65],
+    inputRange: [heroMaxHeight * 0.75, heroMaxHeight],
     outputRange: [0, insets.top + 62],
     extrapolate: 'clamp',
   });
   const [showStickyCard, setShowStickyCard] = useState(false);
   const stickyFadeAnim = useRef(new Animated.Value(0)).current;
+  const stickyIconsFadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    const threshold = heroMaxHeight * 0.35;
+    const threshold = heroMaxHeight * 0.8;
     const listenerId = scrollY.addListener(({ value }: { value: number }) => {
       setShowStickyCard((prev) => {
         if (value > threshold && !prev) return true;
@@ -796,12 +768,19 @@ export default function TripDetailsScreen() {
   }, [heroMaxHeight, scrollY]);
 
   useEffect(() => {
-    Animated.timing(stickyFadeAnim, {
-      toValue: showStickyCard ? 1 : 0,
-      duration: 220,
-      useNativeDriver: true,
-    }).start();
-  }, [showStickyCard, stickyFadeAnim]);
+    if (showStickyCard) {
+      // Text fades in first, icons follow after text is mostly visible
+      Animated.sequence([
+        Animated.timing(stickyFadeAnim, { toValue: 1, duration: 180, useNativeDriver: true }),
+        Animated.timing(stickyIconsFadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }),
+      ]).start();
+    } else {
+      Animated.parallel([
+        Animated.timing(stickyFadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }),
+        Animated.timing(stickyIconsFadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }),
+      ]).start();
+    }
+  }, [showStickyCard, stickyFadeAnim, stickyIconsFadeAnim]);
 
   const [editingJournalEntryId, setEditingJournalEntryId] = useState<string | null>(null);
 
@@ -818,7 +797,7 @@ export default function TripDetailsScreen() {
           name: m.displayName || m.phone || '?',
           avatarUri: m.avatarUri,
         }))
-    : [{ id: uid ?? 'me', name: 'Me' }];
+    : [{ id: uid ?? 'me', name: profileName || 'Me', avatarUri: profileAvatarUrl ?? undefined }];
 
   const tripHousing: TripHousing[] = tripId ? (sharedTrip ? (sharedTrip.housing ?? []) : (housingByTripId[tripId] ?? [])) : [];
 
@@ -828,6 +807,7 @@ export default function TripDetailsScreen() {
   const [housingEndDate, setHousingEndDate] = useState<string | null>(null);
   const [housingCheckIn, setHousingCheckIn] = useState('');
   const [housingCheckOut, setHousingCheckOut] = useState('');
+  const [housingEarlyCheckIn, setHousingEarlyCheckIn] = useState(false);
   const [housingError, setHousingError] = useState<string | null>(null);
   const [housingCalMonth, setHousingCalMonth] = useState(() => {
     const now = new Date();
@@ -835,6 +815,67 @@ export default function TripDetailsScreen() {
   });
 
   const [isInviting, setIsInviting] = useState(false);
+
+  type WeatherData = { tempC: number; description: string; emoji: string; windKph: number };
+  const [weatherData, setWeatherData] = useState<WeatherData | null>(null);
+  const [weatherLoading, setWeatherLoading] = useState(false);
+
+  useEffect(() => {
+    const destination = trip?.destination?.trim();
+    if (!destination) return;
+    // Strip country/state — geocoding works best with just the city name
+    const cityName = destination.split(',')[0].trim();
+    let cancelled = false;
+    const run = async () => {
+      setWeatherLoading(true);
+      try {
+        const geoRes = await fetch(
+          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=1&language=en&format=json`
+        );
+        const geoJson = await geoRes.json();
+        const loc = geoJson?.results?.[0];
+        if (!loc || cancelled) return;
+        const wxRes = await fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=temperature_2m,weather_code,windspeed_10m&temperature_unit=celsius&windspeed_unit=kmh&timezone=auto`
+        );
+        const wxJson = await wxRes.json();
+        if (cancelled) return;
+        const current = wxJson?.current;
+        if (!current) return;
+        const code: number = current.weather_code ?? 0;
+        const emojiMap: [number[], string, string][] = [
+          [[0], '☀️', 'Clear sky'],
+          [[1], '🌤️', 'Mainly clear'],
+          [[2], '⛅', 'Partly cloudy'],
+          [[3], '☁️', 'Overcast'],
+          [[45, 48], '🌫️', 'Foggy'],
+          [[51, 53, 55, 56, 57], '🌦️', 'Drizzle'],
+          [[61, 63, 65, 66, 67], '🌧️', 'Rain'],
+          [[71, 73, 75, 77], '❄️', 'Snow'],
+          [[80, 81, 82], '🌧️', 'Rain showers'],
+          [[85, 86], '🌨️', 'Snow showers'],
+          [[95], '⛈️', 'Thunderstorm'],
+          [[96, 99], '⛈️', 'Thunderstorm with hail'],
+        ];
+        let emoji = '🌡️', description = 'Unknown';
+        for (const [codes, em, desc] of emojiMap) {
+          if (codes.includes(code)) { emoji = em; description = desc; break; }
+        }
+        setWeatherData({
+          tempC: Math.round(current.temperature_2m),
+          description,
+          emoji,
+          windKph: Math.round(current.windspeed_10m),
+        });
+      } catch {
+        // non-blocking — weather is best-effort
+      } finally {
+        if (!cancelled) setWeatherLoading(false);
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [trip?.destination]);
 
   const ensureSharedTrip = async (): Promise<string> => {
     let sharedId = sharedTrip?.id;
@@ -914,6 +955,7 @@ export default function TripDetailsScreen() {
     setHousingEndDate(null);
     setHousingCheckIn('');
     setHousingCheckOut('');
+    setHousingEarlyCheckIn(false);
     setHousingError(null);
     const tripStart = trip?.startDate ? new Date(trip.startDate) : new Date();
     setHousingCalMonth({ year: tripStart.getFullYear(), month: tripStart.getMonth() });
@@ -973,11 +1015,6 @@ export default function TripDetailsScreen() {
     return (first + last).toUpperCase();
   };
 
-  const getDayIndex = (label: string) => {
-    const m = label.match(/(\d+)/);
-    return m ? Number(m[1]) : Number.POSITIVE_INFINITY;
-  };
-
   const parseEventTimeMinutes = (value: string) => {
     const t = value.trim();
     if (!t) return Number.POSITIVE_INFINITY;
@@ -1000,25 +1037,7 @@ export default function TripDetailsScreen() {
     return hours * 60 + minutes;
   };
 
-  const getNextItineraryEvent = () => {
-    const events = itineraryDays
-      .flatMap((day) =>
-        (day.events ?? []).map((event) => ({
-          dayLabel: day.label,
-          dayIndex: getDayIndex(day.label),
-          timeMinutes: parseEventTimeMinutes(event.time),
-          event,
-        }))
-      )
-      .sort((a, b) => {
-        if (a.dayIndex !== b.dayIndex) return a.dayIndex - b.dayIndex;
-        if (a.timeMinutes !== b.timeMinutes) return a.timeMinutes - b.timeMinutes;
-        return a.event.name.localeCompare(b.event.name);
-      });
 
-    const first = events[0];
-    return first ? { dayLabel: first.dayLabel, event: first.event } : undefined;
-  };
 
   const fetchHeroImagesForDestination = async (destination: string) => {
     if (!PEXELS_API_KEY) return [] as string[];
@@ -1389,7 +1408,7 @@ export default function TripDetailsScreen() {
     } else {
       setEditingExpenseId(null);
       setExpenseAmount('');
-      setExpenseCurrency('USD');
+      setExpenseCurrency(homeCurrency);
       setExpenseName('');
       setSplitWith([]);
       setSplitMode('none');
@@ -1870,22 +1889,9 @@ export default function TripDetailsScreen() {
           daysUntilTrip <= 0 &&
           tripEndDateObj !== null &&
           new Date(tripEndDateObj.getFullYear(), tripEndDateObj.getMonth(), tripEndDateObj.getDate()) >= startOfToday;
-        const nextEvent = getNextItineraryEvent();
         const now = new Date();
         const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-        const upcomingHousing = tripHousing
-          .filter((h) => h.endDate >= todayIso)
-          .sort((a, b) => a.startDate.localeCompare(b.startDate))[0];
 
-        let nextMajorTransport: (typeof sortedFlights)[number] | undefined;
-        for (const f of sortedFlights) {
-          const dt = parseFlightDateTime(f.departureDate, f.departureTime);
-          if (dt && dt.getTime() >= Date.now()) {
-            nextMajorTransport = f;
-            break;
-          }
-        }
-        if (!nextMajorTransport) nextMajorTransport = sortedFlights[0];
         return (
           <ThemedView style={styles.tabContent}>
             <ThemedText style={styles.sectionTitle}>Trip Overview</ThemedText>
@@ -1898,6 +1904,39 @@ export default function TripDetailsScreen() {
                     ? 'You fly out tomorrow!'
                     : `There are ${daysUntilTrip} days until the trip!`}
             </ThemedText>
+
+            {tripId && trip ? (
+              <>
+                <TripPrivacyCard
+                  tripId={sharedTrip ? sharedTrip.id : tripId}
+                  source={sharedTrip ? 'shared' : 'personal'}
+                  isPublic={sharedTrip ? sharedTrip.isPublic : trip.isPublic !== false}
+                  canEdit={sharedTrip ? sharedTrip.members.some((m) => m.userId === uid && m.status === 'accepted') : true}
+                />
+                <Pressable
+                  onPress={() => {
+                    const src = sharedTrip ? 'shared' : 'personal';
+                    const id = sharedTrip ? sharedTrip.id : tripId;
+                    router.push({ pathname: '/compose-post', params: { source: src, tripId: id } } as any);
+                  }}
+                  style={{
+                    marginHorizontal: 16,
+                    marginTop: 10,
+                    borderRadius: 14,
+                    paddingVertical: 12,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexDirection: 'row',
+                    gap: 8,
+                    backgroundColor: colors.primary,
+                  }}>
+                  <IconSymbol name="paperplane.fill" size={16} color="#fff" />
+                  <ThemedText style={{ color: '#fff', fontSize: 14, fontWeight: '800' }}>
+                    Share to Shmovements
+                  </ThemedText>
+                </Pressable>
+              </>
+            ) : null}
 
             <ThemedView style={[styles.flightCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
               <Pressable style={styles.flightHeaderRow} onPress={() => toggleSection(setOverviewFlightsCollapsed)}>
@@ -2131,7 +2170,7 @@ export default function TripDetailsScreen() {
                       <TextInput
                         value={housingLocation}
                         onChangeText={setHousingLocation}
-                        placeholder="Location (e.g. Hotel Sunrise, Airbnb downtown)"
+                        placeholder="Address (e.g. 123 Main St, Hotel Sunrise)"
                         placeholderTextColor="#888"
                         style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
                       />
@@ -2214,8 +2253,6 @@ export default function TripDetailsScreen() {
                         </ThemedText>
                       ) : null}
 
-                      <ThemedText style={styles.housingCalLabel}>Optional times</ThemedText>
-
                       <View style={styles.housingTimeRow}>
                         <View style={styles.housingTimeField}>
                           <ThemedText style={styles.housingTimeLabel}>Check-in</ThemedText>
@@ -2238,6 +2275,15 @@ export default function TripDetailsScreen() {
                           />
                         </View>
                       </View>
+
+                      <Pressable
+                        style={styles.housingCheckboxRow}
+                        onPress={() => setHousingEarlyCheckIn((prev) => !prev)}>
+                        <View style={[styles.housingCheckbox, { borderColor: colors.primary, backgroundColor: housingEarlyCheckIn ? colors.primary : 'transparent' }]}>
+                          {housingEarlyCheckIn ? <ThemedText style={styles.housingCheckboxTick}>✓</ThemedText> : null}
+                        </View>
+                        <ThemedText style={styles.housingCheckboxLabel}>Early check-in requested</ThemedText>
+                      </Pressable>
 
                       {housingError ? <ThemedText style={styles.modalErrorText}>{housingError}</ThemedText> : null}
 
@@ -2274,6 +2320,7 @@ export default function TripDetailsScreen() {
                               endDate: housingEndDate!,
                               checkInTime: housingCheckIn.trim() || undefined,
                               checkOutTime: housingCheckOut.trim() || undefined,
+                              earlyCheckInRequested: housingEarlyCheckIn || undefined,
                             };
                             if (sharedTrip) {
                               addSharedHousing(sharedTrip.id, housingPayload);
@@ -2292,76 +2339,126 @@ export default function TripDetailsScreen() {
               </Modal>
             </ThemedView>
 
-            <ThemedView style={[styles.comingUpCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-              <Pressable style={styles.comingUpHeaderRow} onPress={() => toggleSection(setOverviewComingUpCollapsed)}>
-                <View style={styles.sectionHeaderLeft}>
-                  <IconSymbol
-                    name="chevron.right"
-                    size={18}
-                    color={colors.primary}
-                    style={[styles.sectionChevron, !overviewComingUpCollapsed ? styles.sectionChevronExpanded : null]}
-                  />
-                  <ThemedText style={styles.comingUpTitle}>Coming Up</ThemedText>
+            {isOnTrip && (() => {
+              const todayDay = itineraryDays.find((d) => d.date === todayIso);
+              const todayEvents = todayDay
+                ? [...(todayDay.events ?? [])].sort((a, b) => {
+                    const am = parseEventTimeMinutes(a.time);
+                    const bm = parseEventTimeMinutes(b.time);
+                    return am - bm;
+                  })
+                : [];
+              const todayFlights = sortedFlights.filter(
+                (f) => f.departureDate === todayIso || f.arrivalDate === todayIso
+              );
+              const todayHousing = tripHousing.filter(
+                (h) => h.startDate <= todayIso && h.endDate >= todayIso
+              );
+              const sections: React.ReactNode[] = [];
+
+              // Weather
+              sections.push(
+                <View key="weather" style={styles.comingUpRow}>
+                  <ThemedText style={styles.comingUpLabel}>Weather</ThemedText>
+                  {weatherLoading ? (
+                    <ActivityIndicator size="small" />
+                  ) : weatherData ? (
+                    <>
+                      <ThemedText style={styles.comingUpValue}>
+                        {weatherData.emoji}{'  '}{formatTemp(weatherData.tempC)} — {weatherData.description}
+                      </ThemedText>
+                      <ThemedText style={styles.comingUpSubvalue}>Wind {weatherData.windKph} km/h</ThemedText>
+                    </>
+                  ) : (
+                    <ThemedText style={styles.comingUpValue}>Unavailable</ThemedText>
+                  )}
                 </View>
-                <View style={styles.sectionHeaderActionSlot} />
-              </Pressable>
+              );
 
-              {overviewComingUpCollapsed ? null : (
-                <View style={styles.comingUpBody}>
-                  <View style={styles.comingUpRow}>
-                    <ThemedText style={styles.comingUpLabel}>Next event</ThemedText>
-                    <ThemedText style={styles.comingUpValue}>
-                      {nextEvent
-                        ? `${nextEvent.event.name}${nextEvent.event.time ? ` • ${nextEvent.event.time}` : ''}`
-                        : 'No itinerary events yet.'}
-                    </ThemedText>
-                    {nextEvent?.dayLabel || nextEvent?.event.location ? (
-                      <ThemedText style={styles.comingUpSubvalue}>
-                        {nextEvent?.dayLabel ?? ''}
-                        {nextEvent?.dayLabel && nextEvent?.event.location ? ' • ' : ''}
-                        {nextEvent?.event.location ?? ''}
-                      </ThemedText>
-                    ) : null}
-                  </View>
-
-                  <View style={styles.comingUpDivider} />
-
-                  <View style={styles.comingUpRow}>
-                    <ThemedText style={styles.comingUpLabel}>Next major transport</ThemedText>
-                    <ThemedText style={styles.comingUpValue}>
-                      {nextMajorTransport
-                        ? `${nextMajorTransport.from ?? '—'} → ${nextMajorTransport.to ?? '—'} • ${formatFlightDayLine({
-                            departureDate: nextMajorTransport.departureDate,
-                            departureTime: nextMajorTransport.departureTime,
-                            arrivalTime: nextMajorTransport.arrivalTime,
-                          })}`
-                        : 'No flights added yet.'}
-                    </ThemedText>
-                    {nextMajorTransport?.airline || nextMajorTransport?.flightNumber ? (
-                      <ThemedText style={styles.comingUpSubvalue}>
-                        {nextMajorTransport.airline ?? ''}
-                        {nextMajorTransport.airline && nextMajorTransport.flightNumber ? ' • ' : ''}
-                        {nextMajorTransport.flightNumber ?? ''}
-                      </ThemedText>
-                    ) : null}
-                  </View>
-
-                  <View style={styles.comingUpDivider} />
-
-                  <View style={styles.comingUpRow}>
-                    <ThemedText style={styles.comingUpLabel}>Next housing</ThemedText>
-                    <ThemedText style={styles.comingUpValue}>
-                      {upcomingHousing ? upcomingHousing.location : 'No housing added yet.'}
-                    </ThemedText>
-                    {upcomingHousing ? (
-                      <ThemedText style={styles.comingUpSubvalue}>
-                        {formatHousingDate(upcomingHousing.startDate)} – {formatHousingDate(upcomingHousing.endDate)}
-                      </ThemedText>
-                    ) : null}
-                  </View>
+              // Today's itinerary
+              sections.push(<View key="div-itinerary" style={[styles.comingUpDivider, { backgroundColor: colors.border }]} />);
+              sections.push(
+                <View key="itinerary" style={styles.comingUpRow}>
+                  <ThemedText style={styles.comingUpLabel}>Today's itinerary</ThemedText>
+                  {todayEvents.length > 0 ? todayEvents.map((e) => (
+                    <View key={e.id} style={styles.todayEventRow}>
+                      {e.time ? <ThemedText style={styles.todayEventTime}>{e.time}</ThemedText> : null}
+                      <View style={{ flex: 1 }}>
+                        <ThemedText style={styles.comingUpValue}>{e.name}</ThemedText>
+                        {e.location ? <ThemedText style={styles.comingUpSubvalue}>{e.location}</ThemedText> : null}
+                      </View>
+                    </View>
+                  )) : (
+                    <ThemedText style={styles.comingUpValue}>Nothing planned yet.</ThemedText>
+                  )}
                 </View>
-              )}
-            </ThemedView>
+              );
+
+              // Flights today
+              if (todayFlights.length > 0) {
+                sections.push(<View key="div-flights" style={[styles.comingUpDivider, { backgroundColor: colors.border }]} />);
+                sections.push(
+                  <View key="flights" style={styles.comingUpRow}>
+                    <ThemedText style={styles.comingUpLabel}>Flights today</ThemedText>
+                    {todayFlights.map((f) => (
+                      <View key={f.id}>
+                        <ThemedText style={styles.comingUpValue}>
+                          {f.from ?? '—'} → {f.to ?? '—'}
+                          {f.departureDate === todayIso && f.departureTime ? `  •  Departs ${f.departureTime}` : ''}
+                          {f.arrivalDate === todayIso && f.arrivalTime ? `  •  Arrives ${f.arrivalTime}` : ''}
+                        </ThemedText>
+                        {f.airline || f.flightNumber ? (
+                          <ThemedText style={styles.comingUpSubvalue}>
+                            {[f.airline, f.flightNumber].filter(Boolean).join(' ')}
+                          </ThemedText>
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
+                );
+              }
+
+              // Housing today
+              if (todayHousing.length > 0) {
+                sections.push(<View key="div-housing" style={[styles.comingUpDivider, { backgroundColor: colors.border }]} />);
+                sections.push(
+                  <View key="housing" style={styles.comingUpRow}>
+                    <ThemedText style={styles.comingUpLabel}>Staying at</ThemedText>
+                    {todayHousing.map((h) => (
+                      <View key={h.id}>
+                        <ThemedText style={styles.comingUpValue}>{h.location}</ThemedText>
+                        <ThemedText style={styles.comingUpSubvalue}>
+                          {h.startDate === todayIso ? `Check-in${h.checkInTime ? ` at ${h.checkInTime}` : ''}` :
+                           h.endDate === todayIso ? `Check-out${h.checkOutTime ? ` at ${h.checkOutTime}` : ''}` :
+                           'Staying tonight'}
+                          {h.earlyCheckInRequested ? '  •  Early check-in requested' : ''}
+                        </ThemedText>
+                      </View>
+                    ))}
+                  </View>
+                );
+              }
+
+              return (
+                <ThemedView style={[styles.comingUpCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+                  <Pressable style={styles.comingUpHeaderRow} onPress={() => toggleSection(setOverviewComingUpCollapsed)}>
+                    <View style={styles.sectionHeaderLeft}>
+                      <IconSymbol
+                        name="chevron.right"
+                        size={18}
+                        color={colors.primary}
+                        style={[styles.sectionChevron, !overviewComingUpCollapsed ? styles.sectionChevronExpanded : null]}
+                      />
+                      <ThemedText style={styles.comingUpTitle}>Today's Plan</ThemedText>
+                    </View>
+                    <View style={styles.sectionHeaderActionSlot} />
+                  </Pressable>
+                  {overviewComingUpCollapsed ? null : (
+                    <View style={styles.comingUpBody}>{sections}</View>
+                  )}
+                </ThemedView>
+              );
+            })()}
 
             <Modal visible={flightModalVisible} transparent animationType="slide">
               <View style={styles.flightSheetOverlay}>
@@ -3006,8 +3103,8 @@ export default function TripDetailsScreen() {
                           return;
                         }
 
-                        const dateArg = dayDatePickerVisible ? toLocalIsoDate(dayDateDraft) : undefined;
-                        if (dateArg && itineraryDays.some((d) => d.date === dateArg)) {
+                        const dateArg = toLocalIsoDate(dayDateDraft);
+                        if (itineraryDays.some((d) => d.date === dateArg)) {
                           Alert.alert('Day already exists', 'A day for this date has already been added.');
                           return;
                         }
@@ -3214,33 +3311,55 @@ export default function TripDetailsScreen() {
                 },
               ]}>
               <ThemedText style={styles.financesTotalLabel}>Your Total</ThemedText>
-              <ThemedText numberOfLines={2} style={styles.financesTotalValue}>
-                {(() => {
-                  const myShareByCurrency = expenses.reduce<Record<string, number>>((acc, e) => {
-                    const currency = e.currency || 'USD';
-                    const isCreator = !sharedTrip || e.createdBy === uid || !e.createdBy;
-                    const isSplitWithMe = e.splitWith?.includes(uid ?? '') ?? false;
+              {(() => {
+                const myShareByCurrency = expenses.reduce<Record<string, number>>((acc, e) => {
+                  const currency = e.currency || 'USD';
+                  const isCreator = !sharedTrip || e.createdBy === uid || !e.createdBy;
+                  const isSplitWithMe = e.splitWith?.includes(uid ?? '') ?? false;
+                  let share = 0;
+                  if (e.isSplit && e.splitType === 'even' && e.splitWith && e.splitWith.length > 0) {
+                    const perPerson = e.amount / (e.splitWith.length + 1);
+                    if (isCreator || isSplitWithMe) share = perPerson;
+                  } else if (isCreator) {
+                    share = e.amount;
+                  }
+                  acc[currency] = (acc[currency] ?? 0) + share;
+                  return acc;
+                }, {});
 
-                    let share = 0;
-                    if (e.isSplit && e.splitType === 'even' && e.splitWith && e.splitWith.length > 0) {
-                      const perPerson = e.amount / (e.splitWith.length + 1);
-                      if (isCreator || isSplitWithMe) share = perPerson;
-                    } else if (isCreator) {
-                      share = e.amount;
-                    }
+                // Attempt to sum everything in home currency
+                let homeTotal = 0;
+                let allConverted = true;
+                for (const [currency, amount] of Object.entries(myShareByCurrency)) {
+                  if (amount <= 0) continue;
+                  const converted = convertToHome(amount, currency);
+                  if (converted === null) { allConverted = false; break; }
+                  homeTotal += converted;
+                }
 
-                    acc[currency] = (acc[currency] ?? 0) + share;
-                    return acc;
-                  }, {});
+                const originalParts = Object.entries(myShareByCurrency)
+                  .filter(([, amount]) => amount > 0)
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([currency, amount]) => `${amount.toFixed(2)} ${currency}`);
 
-                  const parts = Object.entries(myShareByCurrency)
-                    .filter(([, amount]) => amount > 0)
-                    .sort(([a], [b]) => a.localeCompare(b))
-                    .map(([currency, amount]) => `${amount.toFixed(2)} ${currency}`);
+                const hasMultipleCurrencies = originalParts.length > 1 ||
+                  (originalParts.length === 1 && !originalParts[0].endsWith(homeCurrency));
 
-                  return parts.length ? parts.join(' | ') : '0.00';
-                })()}
-              </ThemedText>
+                return (
+                  <View>
+                    <ThemedText numberOfLines={2} style={styles.financesTotalValue}>
+                      {allConverted && originalParts.length > 0
+                        ? `${homeTotal.toFixed(2)} ${homeCurrency}`
+                        : originalParts.length ? originalParts.join(' | ') : '0.00'}
+                    </ThemedText>
+                    {allConverted && hasMultipleCurrencies && originalParts.length > 0 && (
+                      <ThemedText style={[styles.financesTotalSub, { color: colors.icon }]}>
+                        {originalParts.join(' | ')}
+                      </ThemedText>
+                    )}
+                  </View>
+                );
+              })()}
             </ThemedView>
 
             {(() => {
@@ -3269,16 +3388,43 @@ export default function TripDetailsScreen() {
                     }}>
                     <View style={styles.financeHeaderRow}>
                       <ThemedText style={styles.financeName}>{e.name || 'Expense'}</ThemedText>
-                      <ThemedText style={styles.financeAmount}>
-                        {e.amount.toFixed(2)} {e.currency}
-                      </ThemedText>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        {(() => {
+                          const converted = convertToHome(e.amount, e.currency);
+                          const showOriginal = e.currency !== homeCurrency;
+                          if (converted !== null && showOriginal) {
+                            return (
+                              <>
+                                <ThemedText style={styles.financeAmount}>
+                                  {converted.toFixed(2)} {homeCurrency}
+                                </ThemedText>
+                                <ThemedText style={[styles.financeMeta, { color: colors.icon }]}>
+                                  {e.amount.toFixed(2)} {e.currency}
+                                </ThemedText>
+                              </>
+                            );
+                          }
+                          return (
+                            <ThemedText style={styles.financeAmount}>
+                              {e.amount.toFixed(2)} {e.currency}
+                            </ThemedText>
+                          );
+                        })()}
+                      </View>
                     </View>
                     <View style={styles.financeMetaRow}>
                       {e.isSplit && e.splitWith && e.splitWith.length > 0 ? (
                         <ThemedText style={styles.financeMeta}>
                           {'Even split · '}
-                          {(e.amount / (e.splitWith.length + 1)).toFixed(2)} {e.currency} each
-                          {' · '}
+                          {(() => {
+                            const perPerson = e.amount / (e.splitWith.length + 1);
+                            const converted = convertToHome(perPerson, e.currency);
+                            if (converted !== null && e.currency !== homeCurrency) {
+                              return `${converted.toFixed(2)} ${homeCurrency} (${perPerson.toFixed(2)} ${e.currency})`;
+                            }
+                            return `${perPerson.toFixed(2)} ${e.currency}`;
+                          })()}
+                          {' each · '}
                           {e.splitWith.length + 1} people
                         </ThemedText>
                       ) : e.isSplit ? (
@@ -3366,6 +3512,44 @@ export default function TripDetailsScreen() {
                     <View style={styles.modalOverlay}>
                       <View style={[styles.modalCard, { backgroundColor: colors.surface, maxHeight: '70%' }]}>
                         <ThemedText style={styles.modalTitle}>Select Currency</ThemedText>
+
+                        {/* Quick-pick chips */}
+                        {(() => {
+                          const destCurrency = inferDestinationCurrency(trip?.destination ?? '');
+                          const chips = [
+                            { label: 'Home', code: homeCurrency },
+                            ...(destCurrency && destCurrency !== homeCurrency
+                              ? [{ label: 'Destination', code: destCurrency }]
+                              : []),
+                          ];
+                          return (
+                            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
+                              {chips.map(chip => {
+                                const isActive = expenseCurrency === chip.code;
+                                return (
+                                  <Pressable
+                                    key={chip.code}
+                                    onPress={() => { setExpenseCurrency(chip.code); setCurrencyPickerVisible(false); }}
+                                    style={[
+                                      styles.currencyChip,
+                                      {
+                                        borderColor: isActive ? colors.primary : colors.border,
+                                        backgroundColor: isActive ? colors.primary + '18' : colors.surfaceMuted,
+                                      },
+                                    ]}>
+                                    <ThemedText style={{ fontSize: 11, color: colors.icon, fontWeight: '600' }}>
+                                      {chip.label}
+                                    </ThemedText>
+                                    <ThemedText style={{ fontSize: 14, fontWeight: '800', color: isActive ? colors.primary : colors.text }}>
+                                      {chip.code}
+                                    </ThemedText>
+                                  </Pressable>
+                                );
+                              })}
+                            </View>
+                          );
+                        })()}
+
                         <TextInput
                           value={currencySearch}
                           onChangeText={setCurrencySearch}
@@ -4009,26 +4193,25 @@ export default function TripDetailsScreen() {
             pointerEvents="none"
           />
           <Animated.View style={{ height: cardAreaHeight, overflow: 'hidden' }}>
-            <Animated.View
+            <View
               style={[
                 styles.heroDetailsCard,
                 styles.stickyDetailsCard,
                 {
                   backgroundColor: colors.surface,
                   borderColor: colors.border,
-                  opacity: stickyFadeAnim,
                   marginTop: insets.top + 2,
                 },
               ]}
               pointerEvents="none">
               <View style={styles.heroCardInner}>
-                <View style={{ flex: 1 }}>
+                <Animated.View style={{ flex: 1, opacity: stickyFadeAnim }}>
                   <ThemedText style={[styles.tripDestination, { color: colors.text }]}>{trip?.destination ?? ''}</ThemedText>
                   <ThemedText style={[styles.tripLocationText, { color: colors.icon }]}>
                     {formatTripDateRange(trip?.startDate, trip?.endDate)}
                   </ThemedText>
-                </View>
-                <View style={styles.heroAvatarsRow}>
+                </Animated.View>
+                <Animated.View style={[styles.heroAvatarsRow, { opacity: stickyIconsFadeAnim }]}>
                   {tripPeople.slice(0, 4).map((p) => (
                     <View
                       key={p.id}
@@ -4043,9 +4226,9 @@ export default function TripDetailsScreen() {
                   <View style={[styles.personAvatar, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
                     <IconSymbol name="plus" size={18} color={colors.primary} />
                   </View>
-                </View>
+                </Animated.View>
               </View>
-            </Animated.View>
+            </View>
           </Animated.View>
 
           <ThemedView style={[styles.tabsContainer, { backgroundColor: colors.surfaceMuted }]}>
@@ -4668,13 +4851,34 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     opacity: 0.7,
   },
+  housingCheckboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 4,
+  },
+  housingCheckbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  housingCheckboxTick: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#fff',
+  },
+  housingCheckboxLabel: {
+    fontSize: 14,
+    opacity: 0.8,
+  },
   comingUpCard: {
     borderWidth: 1,
-    borderColor: '#ddd',
     borderRadius: 12,
     padding: 14,
     gap: 10,
-    backgroundColor: '#fff',
   },
   comingUpHeaderRow: {
     flexDirection: 'row',
@@ -4687,17 +4891,18 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   comingUpBody: {
-    gap: 10,
+    gap: 12,
   },
   comingUpRow: {
-    gap: 4,
+    gap: 6,
   },
   comingUpLabel: {
-    fontSize: 12,
-    opacity: 0.7,
+    fontSize: 11,
+    opacity: 0.6,
     fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 0.6,
+    letterSpacing: 0.8,
+    marginBottom: 2,
   },
   comingUpValue: {
     fontSize: 14,
@@ -4706,12 +4911,24 @@ const styles = StyleSheet.create({
   comingUpSubvalue: {
     fontSize: 13,
     opacity: 0.75,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   comingUpDivider: {
     height: 1,
-    opacity: 0.4,
-    backgroundColor: '#ddd',
+    opacity: 0.3,
+  },
+  todayEventRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingVertical: 2,
+  },
+  todayEventTime: {
+    fontSize: 13,
+    fontWeight: '700',
+    opacity: 0.6,
+    width: 60,
+    paddingTop: 1,
   },
   flightTitle: {
     fontSize: 16,
@@ -5030,6 +5247,12 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     flex: 1,
   },
+  financesTotalSub: {
+    fontSize: 12,
+    fontWeight: '500',
+    textAlign: 'right',
+    marginTop: 2,
+  },
   emptyText: {
     fontSize: 13,
     opacity: 0.6,
@@ -5226,6 +5449,15 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 4,
     borderBottomWidth: 1,
+  },
+  currencyChip: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    gap: 2,
   },
   checkboxRow: {
     borderWidth: 1,

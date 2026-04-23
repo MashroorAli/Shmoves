@@ -64,6 +64,7 @@ export interface SharedTripData {
   photos: PhotoEntry[];
   members: TripMember[];
   ownerId: string;
+  isPublic: boolean;
 }
 
 interface SharedTripsContextValue {
@@ -96,7 +97,7 @@ interface SharedTripsContextValue {
   deleteSharedFlight: (sharedTripId: string, flightId: string) => Promise<void>;
   clearSharedFlights: (sharedTripId: string) => Promise<void>;
 
-  addSharedItineraryDay: (sharedTripId: string, label: string, date?: string) => Promise<ItineraryDay>;
+  addSharedItineraryDay: (sharedTripId: string, label: string, date: string) => Promise<ItineraryDay>;
   addSharedItineraryEvent: (sharedTripId: string, dayId: string, name: string, time: string, location?: string) => Promise<ItineraryEvent>;
   updateSharedItineraryDay: (sharedTripId: string, dayId: string, label: string) => Promise<void>;
   deleteSharedItineraryDay: (sharedTripId: string, dayId: string) => Promise<void>;
@@ -117,6 +118,8 @@ interface SharedTripsContextValue {
   addSharedPhoto: (sharedTripId: string, path: string, takenAt?: string) => Promise<PhotoEntry>;
   deleteSharedPhoto: (sharedTripId: string, photoId: string) => Promise<void>;
   toggleFavoritePhoto: (sharedTripId: string, photoId: string) => Promise<void>;
+
+  setSharedTripPublic: (sharedTripId: string, isPublic: boolean) => Promise<void>;
 }
 
 const SharedTripsContext = createContext<SharedTripsContextValue | undefined>(undefined);
@@ -245,6 +248,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
               photos: (row.photos as PhotoEntry[]) ?? [],
               members: tripMembers,
               ownerId: row.owner_id,
+              isPublic: row.is_public ?? true,
             };
           });
         }
@@ -532,12 +536,12 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
     };
 
     // ── Itinerary CRUD ──────────────────────────────────────────────────
-    const addSharedItineraryDay = async (sharedTripId: string, label: string, date?: string): Promise<ItineraryDay> => {
+    const addSharedItineraryDay = async (sharedTripId: string, label: string, date: string): Promise<ItineraryDay> => {
       const current = await readColumn<ItineraryDay[]>(sharedTripId, 'itinerary');
       const created: ItineraryDay = {
         id: `day-${uid()}`,
         label: label.trim() || `Day ${current.length + 1}`,
-        ...(date ? { date } : {}),
+        date,
         events: [],
       };
       const next = [...current, created];
@@ -721,6 +725,18 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       updateLocalTrip(sharedTripId, (t) => ({ ...t, photos: next }));
     };
 
+    const setSharedTripPublic = async (sharedTripId: string, isPublic: boolean) => {
+      updateLocalTrip(sharedTripId, (t) => ({ ...t, isPublic }));
+      const { error } = await supabase
+        .from('shared_trips')
+        .update({ is_public: isPublic, updated_at: new Date().toISOString() })
+        .eq('id', sharedTripId);
+      if (error) {
+        updateLocalTrip(sharedTripId, (t) => ({ ...t, isPublic: !isPublic }));
+        throw error;
+      }
+    };
+
     return {
       sharedTrips,
       pendingInvites,
@@ -755,6 +771,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       addSharedPhoto,
       deleteSharedPhoto,
       toggleFavoritePhoto,
+      setSharedTripPublic,
     };
   }, [sharedTrips, pendingInvites, isLoading, refresh, userId, updateLocalTrip]);
 

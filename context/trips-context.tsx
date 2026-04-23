@@ -7,6 +7,7 @@ export interface Trip {
   destination: string;
   startDate: string;
   endDate: string;
+  isPublic?: boolean;
 }
 
 export interface TicketAttachment {
@@ -28,7 +29,7 @@ export interface ItineraryEvent {
 export interface ItineraryDay {
   id: string;
   label: string;
-  date?: string;
+  date: string;
   events: ItineraryEvent[];
 }
 
@@ -66,6 +67,7 @@ export interface TripHousing {
   endDate: string;
   checkInTime?: string;
   checkOutTime?: string;
+  earlyCheckInRequested?: boolean;
 }
 
 export interface JournalEntry {
@@ -80,13 +82,14 @@ interface TripsContextValue {
   trips: Trip[];
   addTrip: (trip: Omit<Trip, 'id'>) => Trip;
   deleteTrip: (tripId: string) => Promise<void>;
+  setTripPublic: (tripId: string, isPublic: boolean) => void;
   flightsByTripId: Record<string, FlightInfo[]>;
   addFlight: (tripId: string, flight: Omit<FlightInfo, 'id'>) => FlightInfo;
   updateFlight: (tripId: string, flightId: string, flight: Omit<FlightInfo, 'id'>) => void;
   deleteFlight: (tripId: string, flightId: string) => void;
   clearFlights: (tripId: string) => void;
   itineraryByTripId: Record<string, ItineraryDay[]>;
-  addItineraryDay: (tripId: string, label: string, date?: string) => ItineraryDay;
+  addItineraryDay: (tripId: string, label: string, date: string) => ItineraryDay;
   addItineraryEvent: (tripId: string, dayId: string, name: string, time: string, location?: string, notes?: string, tickets?: TicketAttachment[]) => ItineraryEvent;
   updateItineraryDay: (tripId: string, dayId: string, label: string) => void;
   deleteItineraryDay: (tripId: string, dayId: string) => void;
@@ -337,6 +340,10 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
       setHousingByTripId(newHousing);
     };
 
+    const setTripPublic: TripsContextValue['setTripPublic'] = (tripId, isPublic) => {
+      setTrips((prev) => prev.map((t) => (t.id === tripId ? { ...t, isPublic } : t)));
+    };
+
     const normalizeFlight = (flight: Omit<FlightInfo, 'id'>): Omit<FlightInfo, 'id'> => ({
       segment: flight.segment ?? 'auto',
       departureDate: flight.departureDate.trim(),
@@ -389,7 +396,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
       const createdDay: ItineraryDay = {
         id: `day-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         label: label.trim() ? label.trim() : `Day ${currentCount + 1}`,
-        ...(date ? { date } : {}),
+        date,
         events: [],
       };
 
@@ -605,6 +612,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
       trips,
       addTrip,
       deleteTrip,
+      setTripPublic,
       flightsByTripId,
       addFlight,
       updateFlight,

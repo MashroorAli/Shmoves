@@ -5,10 +5,13 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActionSheetIOS,
   Alert,
+  FlatList,
   Image,
   Keyboard,
+  Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   TextInput,
   View,
@@ -18,18 +21,25 @@ import { router } from 'expo-router';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { CURRENCIES } from '@/constants/currencies';
 import { ACCENT_PALETTES, type AccentKey } from '@/constants/theme';
 import { useAccent } from '@/context/accent-context';
 import { useAuth } from '@/context/auth-context';
+import { useHomeCurrency } from '@/context/home-currency-context';
+import { useTempUnit } from '@/context/temp-unit-context';
 import { supabase } from '@/config/supabase';
 import { useColors } from '@/hooks/use-colors';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function ProfileScreen() {
-  const { uid, signOut } = useAuth();
+  const { uid, signOut, refreshProfile } = useAuth();
   const colors = useColors();
   const scheme = useColorScheme() ?? 'light';
   const { accentKey, setAccent } = useAccent();
+  const { tempUnit, setTempUnit } = useTempUnit();
+  const { homeCurrency, setHomeCurrency } = useHomeCurrency();
+  const [currencyPickerVisible, setCurrencyPickerVisible] = useState(false);
+  const [currencySearch, setCurrencySearch] = useState('');
 
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
@@ -228,12 +238,14 @@ export default function ProfileScreen() {
     }
 
     setEditing(false);
+    refreshProfile();
   };
 
   const displayAvatarUri = editing ? avatarUri : savedAvatarUri;
 
   return (
     <ThemedView style={styles.container}>
+      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       {/* Header */}
       <View style={styles.header}>
         <ThemedText type="title">My Profile</ThemedText>
@@ -351,6 +363,82 @@ export default function ProfileScreen() {
 
       <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
+      {/* Temperature Unit */}
+      <ThemedText style={[styles.label, { color: colors.icon }]}>Temperature</ThemedText>
+      <View style={[styles.tempToggleRow, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        {(['F', 'C'] as const).map((unit) => (
+          <Pressable
+            key={unit}
+            onPress={() => setTempUnit(unit)}
+            style={[
+              styles.tempToggleOption,
+              tempUnit === unit && { backgroundColor: colors.primary },
+            ]}>
+            <ThemedText style={[
+              styles.tempToggleText,
+              tempUnit === unit && { color: '#fff' },
+            ]}>
+              °{unit}
+            </ThemedText>
+          </Pressable>
+        ))}
+      </View>
+
+      <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+      {/* Home Currency */}
+      <ThemedText style={[styles.label, { color: colors.icon }]}>Home Currency</ThemedText>
+      <Pressable
+        onPress={() => { setCurrencySearch(''); setCurrencyPickerVisible(true); }}
+        style={[styles.currencyRow, { borderColor: colors.border, backgroundColor: colors.surface }]}
+      >
+        <ThemedText style={[styles.currencyRowText, { color: colors.text }]}>
+          {homeCurrency} — {CURRENCIES.find(c => c.code === homeCurrency)?.name ?? homeCurrency}
+        </ThemedText>
+        <ThemedText style={{ color: colors.icon, fontSize: 16 }}>›</ThemedText>
+      </Pressable>
+
+      <Modal visible={currencyPickerVisible} transparent animationType="slide">
+        <View style={styles.currencyModalOverlay}>
+          <View style={[styles.currencyModalCard, { backgroundColor: colors.background }]}>
+            <ThemedText style={[styles.currencyModalTitle, { color: colors.text }]}>Home Currency</ThemedText>
+            <TextInput
+              value={currencySearch}
+              onChangeText={setCurrencySearch}
+              placeholder="Search currencies..."
+              placeholderTextColor={colors.icon}
+              autoFocus
+              style={[styles.currencySearchInput, { borderColor: colors.border, color: colors.inputText, backgroundColor: colors.surface }]}
+            />
+            <FlatList
+              data={CURRENCIES.filter(c =>
+                c.code.toLowerCase().includes(currencySearch.toLowerCase()) ||
+                c.name.toLowerCase().includes(currencySearch.toLowerCase())
+              )}
+              keyExtractor={c => c.code}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item: c }) => (
+                <Pressable
+                  onPress={() => { setHomeCurrency(c.code); setCurrencyPickerVisible(false); }}
+                  style={[styles.currencyOption, { borderBottomColor: colors.border }, c.code === homeCurrency && { backgroundColor: colors.surfaceMuted }]}
+                >
+                  <ThemedText style={{ fontWeight: '700', color: colors.text }}>{c.code}</ThemedText>
+                  <ThemedText style={{ color: colors.icon, fontSize: 13 }}>{c.name}</ThemedText>
+                </Pressable>
+              )}
+            />
+            <Pressable
+              onPress={() => setCurrencyPickerVisible(false)}
+              style={[styles.currencyDoneBtn, { borderColor: colors.border }]}
+            >
+              <ThemedText style={{ fontWeight: '600', color: colors.text }}>Done</ThemedText>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
       <Pressable
         onPress={async () => {
           await signOut();
@@ -359,6 +447,7 @@ export default function ProfileScreen() {
         style={styles.signOutButton}>
         <ThemedText style={styles.signOutText}>Sign Out</ThemedText>
       </Pressable>
+      </ScrollView>
     </ThemedView>
   );
 }
@@ -526,5 +615,75 @@ const styles = StyleSheet.create({
     height: 10,
     borderRadius: 5,
     backgroundColor: 'rgba(255,255,255,0.85)',
+  },
+  tempToggleRow: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderRadius: 10,
+    overflow: 'hidden',
+    alignSelf: 'flex-start',
+    marginTop: 4,
+  },
+  tempToggleOption: {
+    paddingHorizontal: 24,
+    paddingVertical: 8,
+  },
+  tempToggleText: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  currencyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  currencyRowText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  currencyModalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  currencyModalCard: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: '75%',
+  },
+  currencyModalTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  currencySearchInput: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    marginBottom: 8,
+  },
+  currencyOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  currencyDoneBtn: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
   },
 });

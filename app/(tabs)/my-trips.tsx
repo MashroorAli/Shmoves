@@ -68,7 +68,7 @@ export default function MyTripsScreen() {
   // Merge personal trips and shared trips into a single list
   type MergedTrip = Trip & { isShared?: boolean; sharedTripId?: string };
 
-  const { upcomingTrips, pastTrips, daysUntilNext } = useMemo(() => {
+  const { currentTrips, upcomingTrips, pastTrips, daysUntilNext } = useMemo(() => {
     const today = new Date();
     const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
@@ -87,13 +87,17 @@ export default function MyTripsScreen() {
 
     const allTrips = [...personalTrips, ...shared];
 
+    const current: MergedTrip[] = [];
     const upcoming: MergedTrip[] = [];
     const past: MergedTrip[] = [];
 
     for (const trip of allTrips) {
+      const start = parseLocalDate(trip.startDate);
       const end = parseLocalDate(trip.endDate);
       if (end && end.getTime() < todayStart.getTime()) {
         past.push(trip);
+      } else if (start && start.getTime() <= todayStart.getTime()) {
+        current.push(trip);
       } else {
         upcoming.push(trip);
       }
@@ -118,7 +122,7 @@ export default function MyTripsScreen() {
       daysUntilNext = Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
     }
 
-    return { upcomingTrips: upcoming, pastTrips: past, daysUntilNext };
+    return { currentTrips: current, upcomingTrips: upcoming, pastTrips: past, daysUntilNext };
   }, [trips, sharedTrips]);
 
   const handleTripOptions = (trip: MergedTrip) => {
@@ -193,6 +197,15 @@ export default function MyTripsScreen() {
       </ThemedView>
 
       <ScrollView style={{ flex: 1, marginTop: 30 }} contentContainerStyle={{ gap: 16, paddingBottom: 40 }}>
+        {/* Current Trip */}
+        {currentTrips.length > 0 && (
+          <>
+            <ThemedText style={styles.sectionHeader}>Current Trip</ThemedText>
+            {currentTrips.map(renderTripCard)}
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          </>
+        )}
+
         {/* Invited */}
         <>
           <ThemedText style={styles.sectionHeader}>Invites</ThemedText>
@@ -241,8 +254,10 @@ export default function MyTripsScreen() {
 
         {upcomingTrips.length > 0 ? (
           upcomingTrips.map(renderTripCard)
-        ) : trips.length === 0 && sharedTrips.length === 0 ? (
+        ) : trips.length === 0 && sharedTrips.length === 0 && currentTrips.length === 0 ? (
           <ThemedText style={styles.placeholder}>Your saved trips will appear here.</ThemedText>
+        ) : upcomingTrips.length === 0 ? (
+          <ThemedText style={styles.placeholder}>No upcoming trips.</ThemedText>
         ) : null}
 
         <View style={[styles.divider, { backgroundColor: colors.border }]} />
