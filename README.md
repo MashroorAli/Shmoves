@@ -4,7 +4,7 @@
 
 Shmoves is a full-stack mobile app that eliminates the chaos of group travel — no more bouncing between your email for flight confirmations, your Airbnb app for addresses, and three different group chats for photos. Everything you need for a trip lives in Shmoves, and it's built to be shared.
 
-**https://apps.apple.com/us/app/shmoves/id6761285310**
+**[Download on the App Store!]([https://your-url-here.com](https://apps.apple.com/us/app/shmoves/id6761285310))**
 
 ---
 
@@ -70,4 +70,4 @@ It's live on the App Store and actively maintained.
 
 ## Contact
 
-Feel free to reach out on [LinkedIn] or open an issue if you find a bug or have a feature idea.
+Feel free to reach out on [LinkedIn]([https://your-url-here.com](https://www.linkedin.com/in/mashroor-ali/)) or open an issue if you find a bug or have a feature idea.
