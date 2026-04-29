@@ -1,50 +1,73 @@
-# Welcome to your Expo app 👋
+# Shmoves
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+**Your travel life, all in one place.**
 
-## Get started
+Shmoves is a full-stack mobile app that eliminates the chaos of group travel — no more bouncing between your email for flight confirmations, your Airbnb app for addresses, and three different group chats for photos. Everything you need for a trip lives in Shmoves, and it's built to be shared.
 
-1. Install dependencies
+**https://apps.apple.com/us/app/shmoves/id6761285310** ←
 
-   ```bash
-   npm install
-   ```
+---
 
-2. Start the app
+## The Problem
 
-   ```bash
-   npx expo start
-   ```
+Anyone who's traveled with a group knows the drill: your itinerary is in a Google Doc, your accommodation address is buried in an email, your tickets are in a PDF somewhere, and the photos from the trip are spread across five different people's camera rolls. It's a mess.
 
-In the output, you'll find options to open the app in a
+Shmoves fixes that.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+---
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+## Features
 
-## Get a fresh project
+### 🗂 Trip Organization
+Keep all your travel documents in one place — flight tickets, hotel confirmations, itineraries, addresses, and anything else you need. No more digging through email.
 
-When you're ready, run:
+### 📸 Group Photo Sharing
+Everyone on the trip can upload photos directly to a shared album. Favorite the shots you love, and share them directly to social media from inside the app — no re-downloading, no re-uploading.
 
-```bash
-npm run reset-project
-```
+### 💸 Trip Finance Tracker
+Track what you've spent, split costs with your group, and see at a glance who's paid you back and who hasn't. Travel math, solved.
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+### 🔗 Easy Group Invites
+Invite travel companions via QR code or SMS — they're in the trip in seconds.
 
-## Learn more
+### 🔐 Secure Authentication
+Sign in with Apple for a seamless, privacy-first login experience.
 
-To learn more about developing your project with Expo, look at the following resources:
+---
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Tech Stack
 
-## Join the community
+| Layer | Technology |
+| Framework | React Native + Expo |
+| Language | TypeScript |
+| Navigation | Expo Router (file-based) |
+| Backend & Auth | Supabase |
+| Serverless Functions | Supabase Edge Functions (SMS invites) |
+| UI & Animation | React Native Reanimated, Gesture Handler |
+| Media | Expo Image Picker, Expo Camera, Expo Media Library |
+| Sharing | React Native QR Code SVG, Expo Clipboard |
+| CI | GitHub Actions |
 
-Join our community of developers creating universal apps.
+---
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## Architecture Highlights
+
+- **Supabase** handles authentication (including Apple Sign-In), real-time database, and file storage for trip documents and photos
+- **Supabase Edge Functions** power SMS-based trip invitations without exposing credentials on the client
+- **File-based routing** via Expo Router keeps navigation clean and scalable
+- **Context API** manages shared trip state across screens
+- **TypeScript throughout** for type safety and maintainability
+
+---
+
+## About the Developer
+
+I'm a former IB Math & Science teacher turned self-taught software engineer. I built Shmoves because I kept running into the same frustrating problem every time I traveled with a group — and decided to build the solution myself.
+
+It's live on the App Store and actively maintained.
+
+---
+
+## Contact
+
+Feel free to reach out on [LinkedIn] or open an issue if you find a bug or have a feature idea.
