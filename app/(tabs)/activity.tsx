@@ -2,7 +2,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CommentsSheet } from '@/components/comments-sheet';
 import { FriendsSheet } from '@/components/friends-sheet';
@@ -17,7 +16,6 @@ import { useColors } from '@/hooks/use-colors';
 
 export default function ActivityScreen() {
   const colors = useColors();
-  const insets = useSafeAreaInsets();
   const { uid } = useAuth();
   const { incomingRequests, friends } = useSocial();
 
@@ -112,34 +110,38 @@ export default function ActivityScreen() {
     );
   };
 
-  return (
-    <ThemedView style={[styles.container, { paddingTop: insets.top + 12 }]}>
-      <View style={styles.headerRow}>
-        <ThemedText style={[styles.headerTitle, { color: colors.text }]}>Shmovements</ThemedText>
-        <View style={styles.headerActions}>
-          <Pressable
-            onPress={() => router.push('/compose-post')}
-            style={[styles.headerBtn, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
-            hitSlop={8}
-          >
-            <Ionicons name="add" size={22} color={colors.text} />
-          </Pressable>
-          <Pressable
-            onPress={() => setFriendsOpen(true)}
-            style={[styles.headerBtn, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
-            hitSlop={8}
-          >
-            <Ionicons name="people-outline" size={20} color={colors.text} />
-            {incomingRequests.length > 0 ? (
-              <View style={[styles.badge, { backgroundColor: colors.primary }]}>
-                <ThemedText style={styles.badgeText}>{incomingRequests.length}</ThemedText>
-              </View>
-            ) : null}
-          </Pressable>
-        </View>
+  const listHeader = (
+    <View style={[styles.headerRow, { paddingTop: 60 }]}>
+      <ThemedText style={[styles.headerTitle, { color: colors.text }]}>Shmovements</ThemedText>
+      <View style={styles.headerActions}>
+        <Pressable
+          onPress={() => router.push('/compose-post')}
+          style={[styles.headerBtn, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
+          hitSlop={8}
+        >
+          <Ionicons name="add" size={22} color={colors.text} />
+        </Pressable>
+        <Pressable
+          onPress={() => setFriendsOpen(true)}
+          style={[styles.headerBtn, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
+          hitSlop={8}
+        >
+          <Ionicons name="people-outline" size={20} color={colors.text} />
+          {incomingRequests.length > 0 ? (
+            <View style={[styles.badge, { backgroundColor: colors.primary }]}>
+              <ThemedText style={styles.badgeText}>{incomingRequests.length}</ThemedText>
+            </View>
+          ) : null}
+        </Pressable>
       </View>
+    </View>
+  );
 
+  return (
+    <ThemedView style={styles.container}>
       <FlatList
+        ListHeaderComponent={listHeader}
+        showsVerticalScrollIndicator={false}
         data={posts}
         keyExtractor={(p) => p.id}
         contentContainerStyle={posts.length ? styles.listContent : styles.emptyContent}
@@ -175,7 +177,7 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     paddingHorizontal: 4,
   },
-  headerTitle: { fontSize: 26, fontWeight: '800' },
+  headerTitle: { fontSize: 26, fontWeight: '800', lineHeight: 34 },
   headerActions: { flexDirection: 'row', gap: 8 },
   headerBtn: {
     width: 40,

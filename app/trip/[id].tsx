@@ -29,15 +29,23 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import RNAnimated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { TripPrivacyCard } from '@/components/trip-privacy-card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { CURRENCIES, inferDestinationCurrency } from '@/constants/currencies';
+import { CURRENCIES, CURRENCY_SYMBOLS, inferDestinationCurrency } from '@/constants/currencies';
 import { useAuth } from '@/context/auth-context';
 import { useHomeCurrency } from '@/context/home-currency-context';
-import { type PhotoEntry, useSharedTrips } from '@/context/shared-trips-context';
+import { type PhotoEntry, type Settlement, useSharedTrips } from '@/context/shared-trips-context';
 import { type TicketAttachment, type TripHousing, useTrips } from '@/context/trips-context';
 import { useColors } from '@/hooks/use-colors';
 import { useTempUnit } from '@/context/temp-unit-context';
@@ -121,165 +129,9 @@ function PhotoTile({
   );
 }
 
-// ─── SwipeableDayCard ────────────────────────────────────────────────────────
-const SWIPE_THRESHOLD = 40;
-
-function SwipeableDayCard({
-  onDelete,
-  onEdit,
-  colors,
-  children,
-}: {
-  onDelete: () => void;
-  onEdit: () => void;
-  colors: typeof import('@/constants/theme').Colors.light;
-  children: React.ReactNode;
-}) {
-  const translateX = useRef(new Animated.Value(0)).current;
-  // Tracks which direction the current swipe is going so we show the right action bg
-  const swipeDir = useRef<'left' | 'right' | null>(null);
-
-  const panResponder = useRef(
-    PanResponder.create({
-      // Take over when movement is clearly horizontal
-      onMoveShouldSetPanResponder: (_, { dx, dy }) =>
-        Math.abs(dx) > 6 && Math.abs(dx) > Math.abs(dy) * 1.5,
-      onPanResponderGrant: () => {
-        swipeDir.current = null;
-      },
-      onPanResponderMove: (_, { dx }) => {
-        if (swipeDir.current === null) {
-          swipeDir.current = dx < 0 ? 'left' : 'right';
-        }
-        // Clamp: left max -120, right max +120, with soft resistance beyond threshold
-        const clamped =
-          dx < 0
-            ? Math.max(dx, -120)
-            : Math.min(dx, 120);
-        translateX.setValue(clamped);
-      },
-      onPanResponderRelease: (_, { dx }) => {
-        if (dx < -SWIPE_THRESHOLD) {
-          // Swipe left past threshold → delete
-          Animated.timing(translateX, {
-            toValue: -400,
-            duration: 220,
-            useNativeDriver: true,
-          }).start(() => {
-            onDelete();
-            translateX.setValue(0);
-          });
-        } else if (dx > SWIPE_THRESHOLD) {
-          // Swipe right past threshold → edit, snap back
-          Animated.spring(translateX, {
-            toValue: 0,
-            useNativeDriver: true,
-            speed: 30,
-            bounciness: 4,
-          }).start();
-          onEdit();
-        } else {
-          // Not far enough — snap back
-          Animated.spring(translateX, {
-            toValue: 0,
-            useNativeDriver: true,
-            speed: 30,
-            bounciness: 4,
-          }).start();
-        }
-      },
-      onPanResponderTerminate: () => {
-        Animated.spring(translateX, {
-          toValue: 0,
-          useNativeDriver: true,
-          speed: 30,
-          bounciness: 4,
-        }).start();
-      },
-    }),
-  ).current;
-
-  // Right side (delete) background — fades from transparent to red at SWIPE_THRESHOLD
-  const deleteBg = translateX.interpolate({
-    inputRange: [-120, -SWIPE_THRESHOLD, 0],
-    outputRange: [colors.destructive, colors.destructive, 'transparent'],
-    extrapolate: 'clamp',
-  });
-
-  // Left side (edit) background — fades from transparent to blue at SWIPE_THRESHOLD
-  const editBg = translateX.interpolate({
-    inputRange: [0, SWIPE_THRESHOLD, 120],
-    outputRange: ['transparent', colors.primary, colors.primary],
-    extrapolate: 'clamp',
-  });
-
-  // Icon opacity — appears when swiping the correct direction
-  const deleteIconOpacity = translateX.interpolate({
-    inputRange: [-120, -10, 0],
-    outputRange: [1, 0.6, 0],
-    extrapolate: 'clamp',
-  });
-  const editIconOpacity = translateX.interpolate({
-    inputRange: [0, 10, 120],
-    outputRange: [0, 0.6, 1],
-    extrapolate: 'clamp',
-  });
-
-  return (
-    <View style={swipeCardStyles.row}>
-      {/* Delete action (right side) */}
-      <Animated.View
-        pointerEvents="none"
-        style={[swipeCardStyles.actionRight, { backgroundColor: deleteBg }]}>
-        <Animated.View style={{ opacity: deleteIconOpacity }}>
-          <IconSymbol name="trash" size={22} color="#fff" />
-        </Animated.View>
-      </Animated.View>
-
-      {/* Edit action (left side) */}
-      <Animated.View
-        pointerEvents="none"
-        style={[swipeCardStyles.actionLeft, { backgroundColor: editBg }]}>
-        <Animated.View style={{ opacity: editIconOpacity }}>
-          <IconSymbol name="pencil" size={22} color="#fff" />
-        </Animated.View>
-      </Animated.View>
-
-      {/* The card itself */}
-      <Animated.View
-        style={[swipeCardStyles.card, { transform: [{ translateX }] }]}
-        {...panResponder.panHandlers}>
-        {children}
-      </Animated.View>
-    </View>
-  );
+function DayCard({ children }: { children: React.ReactNode }) {
+  return <View>{children}</View>;
 }
-
-const swipeCardStyles = StyleSheet.create({
-  row: {
-    position: 'relative',
-    overflow: 'hidden',
-    borderRadius: 12,
-    marginBottom: 0,
-  },
-  card: {
-    width: '100%',
-  },
-  actionRight: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'flex-end',
-    paddingRight: 20,
-    borderRadius: 12,
-  },
-  actionLeft: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'flex-start',
-    paddingLeft: 20,
-    borderRadius: 12,
-  },
-});
 
 export default function TripDetailsScreen() {
   const { id } = useLocalSearchParams<{
@@ -312,6 +164,8 @@ export default function TripDetailsScreen() {
     addSharedPhoto,
     deleteSharedPhoto,
     toggleFavoritePhoto,
+    markSettled,
+    unmarkSettled,
   } = useSharedTrips();
   const {
     trips,
@@ -400,35 +254,56 @@ export default function TripDetailsScreen() {
 
   const [showItineraryTips, setShowItineraryTips] = useState(false);
   const [itineraryTipIndex, setItineraryTipIndex] = useState(0);
+  // Lags itineraryTipIndex — only updates while bubble is invisible, so text/dots
+  // never flash the new tip's content over the old position.
+  const [displayedTipIndex, setDisplayedTipIndex] = useState(0);
   const itineraryTipsShownRef = useRef(false);
   const helpButtonRef = useRef<View>(null);
   const pencilButtonRef = useRef<View>(null);
-  const [tipAnchor, setTipAnchor] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  // Add Event buttons exist per-day inside expanded day cards. We register each one
+  // in this Map so the tip can point at the most recently expanded day's button.
+  const addEventRefs = useRef<Map<string, View>>(new Map());
+  const lastExpandedDayIdRef = useRef<string | null>(null);
+  // Refs for fields inside the Add Event modal (used by tips 3 + 4).
+  const locationFieldRef = useRef<View>(null);
+  const ticketsFieldRef = useRef<View>(null);
+  // Gates whether overlay mounts. Only flips at start (true) and end (false) — never mid-animation.
+  const [tipVisible, setTipVisible] = useState(false);
 
-  // Tip bubble animations
-  const tipBubbleScale = useRef(new Animated.Value(0.88)).current;
-  const tipBubbleOpacity = useRef(new Animated.Value(0)).current;
-  const tipContentOpacity = useRef(new Animated.Value(1)).current;
-  const tipBackdropOpacity = useRef(new Animated.Value(0)).current;
-  // Spotlight morph animated values (JS driver for layout props)
-  const spotCx = useRef(new Animated.Value(0)).current;
-  const spotCy = useRef(new Animated.Value(0)).current;
-  const spotRAnim = useRef(new Animated.Value(0)).current;
-  // Derived animated nodes for spotlight geometry
-  const spotCxMinusR = useMemo(() => Animated.subtract(spotCx, spotRAnim), []);
-  const spotCyMinusR = useMemo(() => Animated.subtract(spotCy, spotRAnim), []);
-  const spotCxPlusR = useMemo(() => Animated.add(spotCx, spotRAnim), []);
-  const spotCyPlusR = useMemo(() => Animated.add(spotCy, spotRAnim), []);
-  const spotDiameter = useMemo(() => Animated.multiply(spotRAnim, 2), []);
-  // Help button pulse ring
+  // Bubble shared values — only opacity + scale run on UI thread.
+  const bubbleOpacity = useSharedValue(0);
+  const bubbleScale = useSharedValue(0.88);
+
+  // Bubble position lives in React state so React's own reconciler clears top/bottom
+  // cleanly when the anchor mode switches (no reanimated style-accumulation issue).
+  const [tipPosition, setTipPosition] = useState<{ top?: number; bottom?: number }>({});
+  const [arrowLeft, setArrowLeft] = useState(0);
+  const [arrowDirection, setArrowDirection] = useState<'up' | 'down'>('down');
+
+  // Help button pulse ring (kept on legacy Animated — works fine, native driver)
   const helpPulseScale = useRef(new Animated.Value(1)).current;
   const helpPulseOpacity = useRef(new Animated.Value(0)).current;
 
-  const getTipRef = (target: string | undefined) =>
-    target === 'pencil' ? pencilButtonRef
-    : target === 'help' ? helpButtonRef
-    : target === 'dayCards' ? dayCardsRef
-    : null;
+  const bubbleAnimStyle = useAnimatedStyle(() => ({
+    opacity: bubbleOpacity.value,
+    transform: [{ scale: bubbleScale.value }],
+  }));
+
+  const getTipNode = (target: string | undefined): View | null => {
+    if (target === 'pencil') return pencilButtonRef.current;
+    if (target === 'help') return helpButtonRef.current;
+    if (target === 'dayCards') return null;
+    if (target === 'location') return locationFieldRef.current;
+    if (target === 'tickets') return ticketsFieldRef.current;
+    if (target === 'addEvent') {
+      const last = lastExpandedDayIdRef.current;
+      if (last && addEventRefs.current.has(last)) return addEventRefs.current.get(last) ?? null;
+      // Fallback: first registered Add Event button (any expanded day).
+      const first = addEventRefs.current.values().next().value;
+      return first ?? null;
+    }
+    return null;
+  };
 
   const getSpotR = (target: string | undefined, w: number, h: number) => {
     if (target === 'dayCards') return 0; // No spotlight hole — fully dark overlay
@@ -436,77 +311,123 @@ export default function TripDetailsScreen() {
     return Math.max(w, h) / 2 + pad;
   };
 
+  // Compute bubble position. For 'center' targets x/y/w are ignored.
+  const computePosition = (target: string | undefined, x: number, y: number, w: number, h: number) => {
+    const screenH = Dimensions.get('window').height;
+    const screenW = Dimensions.get('window').width;
+    const bubbleMargin = 24;
+    if (target === 'center') {
+      return { pos: { bottom: 100 } as { top?: number; bottom?: number }, arrow: screenW / 2 - bubbleMargin - 10, arrowDir: 'down' as 'up' | 'down' };
+    }
+    // Fallbacks for modal-tip targets when measurement fails (e.g. ref not yet set).
+    if ((target === 'location' || target === 'tickets') && (y <= 0 || w <= 0)) {
+      return target === 'location'
+        ? { pos: { top: Math.round(screenH * 0.44) } as { top?: number; bottom?: number }, arrow: screenW / 2 - bubbleMargin - 10, arrowDir: 'up' as 'up' | 'down' }
+        : { pos: { bottom: Math.round(screenH * 0.18) } as { top?: number; bottom?: number }, arrow: screenW / 2 - bubbleMargin - 10, arrowDir: 'down' as 'up' | 'down' };
+    }
+    if (target === 'location') {
+      return {
+        pos: { top: y + h + 8 } as { top?: number; bottom?: number },
+        arrow: x + w / 2 - bubbleMargin - 10,
+        arrowDir: 'up' as 'up' | 'down',
+      };
+    }
+    const pos = target === 'dayCards'
+      ? { bottom: screenH - y + 8 }
+      : { bottom: screenH - y + 14 };
+    const arrow = x + w / 2 - bubbleMargin - 10;
+    return { pos, arrow, arrowDir: 'down' as 'up' | 'down' };
+  };
+
+  // Open / close effect.
   useEffect(() => {
     if (!showItineraryTips) {
-      // Dismiss: shrink spotlight + fade everything, then unmount
-      Animated.parallel([
-        Animated.timing(tipBubbleOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
-        Animated.spring(tipBubbleScale, { toValue: 0.88, useNativeDriver: true, speed: 40, bounciness: 0 }),
-        Animated.timing(spotRAnim, { toValue: 0, duration: 220, useNativeDriver: false }),
-        Animated.timing(tipBackdropOpacity, { toValue: 0, duration: 220, useNativeDriver: false }),
-      ]).start(() => setTipAnchor(null));
+      bubbleOpacity.value = withTiming(0, { duration: 220 }, (finished) => {
+        if (finished) runOnJS(setTipVisible)(false);
+      });
+      bubbleScale.value = withSpring(0.88, { damping: 26, stiffness: 200 });
       return;
     }
     const tip = ITINERARY_TIPS[itineraryTipIndex];
-    const ref = getTipRef(tip?.target);
-    if (ref?.current) {
-      setTimeout(() => {
-        ref.current?.measureInWindow((x, y, w, h) => {
-          const cx = x + w / 2, cy = y + h / 2;
-          const r = getSpotR(tip?.target, w, h);
-          // Position spotlight at target with hole closed (r=0 → fully dark)
-          spotCx.setValue(cx);
-          spotCy.setValue(cy);
-          spotRAnim.setValue(0);
-          tipBackdropOpacity.setValue(0);
-          tipContentOpacity.setValue(1);
-          tipBubbleScale.setValue(0.88);
-          tipBubbleOpacity.setValue(0);
-          setTipAnchor({ x, y, w, h });
-          // Animate: overlay fades in, spotlight hole opens, bubble pops in
-          Animated.parallel([
-            Animated.timing(tipBackdropOpacity, { toValue: 1, duration: 260, useNativeDriver: false }),
-            Animated.spring(spotRAnim, { toValue: r, useNativeDriver: false, speed: 18, bounciness: 4 }),
-            Animated.spring(tipBubbleScale, { toValue: 1, useNativeDriver: true, speed: 28, bounciness: 6 }),
-            Animated.timing(tipBubbleOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
-          ]).start();
-        });
-      }, 50);
-    } else {
-      setTipAnchor(null);
-    }
-  }, [showItineraryTips]);
 
-  // Morph spotlight between tips: bubble fades out → spotlight morphs → bubble fades in at new position
-  useEffect(() => {
-    if (!showItineraryTips) return;
-    // Fade bubble out first
-    Animated.timing(tipBubbleOpacity, { toValue: 0, duration: 100, useNativeDriver: true }).start(() => {
-      const tip = ITINERARY_TIPS[itineraryTipIndex];
-      const ref = getTipRef(tip?.target);
-      if (!ref?.current) return;
-      ref.current.measureInWindow((x, y, w, h) => {
-        const cx = x + w / 2, cy = y + h / 2;
-        const r = getSpotR(tip?.target, w, h);
-        setTipAnchor({ x, y, w, h });
-        tipContentOpacity.setValue(1);
-        // Morph spotlight to new position
-        Animated.parallel([
-          Animated.spring(spotCx, { toValue: cx, useNativeDriver: false, speed: 14, bounciness: 3 }),
-          Animated.spring(spotCy, { toValue: cy, useNativeDriver: false, speed: 14, bounciness: 3 }),
-          Animated.spring(spotRAnim, { toValue: r, useNativeDriver: false, speed: 14, bounciness: 3 }),
-        ]).start();
-        // Pop bubble back in at new position (slight delay for morph to start)
-        setTimeout(() => {
-          tipBubbleScale.setValue(0.92);
-          Animated.parallel([
-            Animated.timing(tipBubbleOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
-            Animated.spring(tipBubbleScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 5 }),
-          ]).start();
-        }, 80);
+    const applyOpen = (x: number, y: number, w: number, h: number) => {
+      const { pos, arrow, arrowDir } = computePosition(tip?.target, x, y, w, h);
+      bubbleScale.value = 0.88;
+      bubbleOpacity.value = 0;
+      setTipPosition(pos);
+      setArrowLeft(arrow);
+      setArrowDirection(arrowDir);
+      setDisplayedTipIndex(itineraryTipIndex);
+      setTipVisible(true);
+      bubbleScale.value   = withSpring(1, { damping: 24, stiffness: 180 });
+      bubbleOpacity.value = withTiming(1, { duration: 220 });
+    };
+
+    setTimeout(() => {
+      if (tip?.target === 'dayCards') {
+        findTopmostVisibleDayCard(applyOpen);
+        return;
+      }
+      const node = getTipNode(tip?.target);
+      if (node) {
+        node.measureInWindow((x, y, w, h) => applyOpen(x, y, w, h));
+      } else {
+        applyOpen(0, 0, 0, 0);
+      }
+    }, 50);
+  }, [showItineraryTips]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Morph effect — fade bubble out, swap text/position while invisible, fade back in.
+  const applyMorphForCurrentTip = useCallback(() => {
+    const tip = ITINERARY_TIPS[itineraryTipIndex];
+
+    const applyMorph = (x: number, y: number, w: number, h: number) => {
+      const { pos, arrow, arrowDir } = computePosition(tip?.target, x, y, w, h);
+      setTipPosition(pos);
+      setArrowLeft(arrow);
+      setArrowDirection(arrowDir);
+      setDisplayedTipIndex(itineraryTipIndex);
+      bubbleScale.value   = 0.94;
+      bubbleScale.value   = withDelay(200, withSpring(1, { damping: 24, stiffness: 180 }));
+      bubbleOpacity.value = withDelay(200, withTiming(1, { duration: 220 }));
+    };
+
+    // For modal-anchored tips, the modal needs a moment to be fully laid out
+    // before measureInWindow returns reliable coordinates.
+    const tryMeasure = (attemptsLeft: number) => {
+      const node = getTipNode(tip?.target);
+      if (!node) {
+        if (attemptsLeft > 0 && isModalTip(tip?.target)) {
+          setTimeout(() => tryMeasure(attemptsLeft - 1), 80);
+        } else {
+          applyMorph(0, 0, 0, 0);
+        }
+        return;
+      }
+      node.measureInWindow((x, y, w, h) => {
+        // If iOS reports zeros mid-animation, retry once.
+        if ((y <= 0 || w <= 0) && attemptsLeft > 0 && isModalTip(tip?.target)) {
+          setTimeout(() => tryMeasure(attemptsLeft - 1), 80);
+        } else {
+          applyMorph(x, y, w, h);
+        }
       });
+    };
+    if (tip?.target === 'dayCards') {
+      findTopmostVisibleDayCard(applyMorph);
+      return;
+    }
+    tryMeasure(isModalTip(tip?.target) ? 4 : 0);
+  }, [itineraryTipIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!showItineraryTips || !tipVisible) return;
+    const tip = ITINERARY_TIPS[itineraryTipIndex];
+    const fadeDuration = 250;
+    bubbleOpacity.value = withTiming(0, { duration: fadeDuration }, (finished) => {
+      if (finished) runOnJS(applyMorphForCurrentTip)();
     });
-  }, [itineraryTipIndex]);
+  }, [itineraryTipIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Help button pulse loop — runs while itinerary tab is active and tips haven't been seen
   useEffect(() => {
@@ -530,12 +451,39 @@ export default function TripDetailsScreen() {
   }, [activeTab]);
 
   const dayCardsRef = useRef<View>(null);
+  const dayCardRefs = useRef<Map<string, View>>(new Map());
 
-  const ITINERARY_TIPS: { text: string; target: 'dayCards' | 'pencil' | 'help' }[] = [
-    { text: 'Tap any day to expand it and see your events.', target: 'dayCards' },
-    { text: 'Tap the pencil button to enter edit mode — rename or delete days.', target: 'pencil' },
-    { text: 'Tap the ? button anytime to replay these tips.', target: 'help' },
+  const findTopmostVisibleDayCard = (callback: (x: number, y: number, w: number, h: number) => void) => {
+    const screenH = Dimensions.get('window').height;
+    const nodes = Array.from(dayCardRefs.current.values());
+    if (nodes.length === 0) { callback(0, 0, 0, 0); return; }
+    let remaining = nodes.length;
+    const results: { x: number; y: number; w: number; h: number }[] = [];
+    nodes.forEach((node) => {
+      node.measureInWindow((x, y, w, h) => {
+        results.push({ x, y, w, h });
+        remaining--;
+        if (remaining === 0) {
+          const visible = results.filter((r) => r.y >= 240 && r.y + r.h <= screenH - 80);
+          const pool = visible.length > 0 ? visible : results;
+          pool.sort((a, b) => a.y - b.y);
+          const top = pool[0];
+          callback(top.x, top.y, top.w, top.h);
+        }
+      });
+    });
+  };
+
+  const ITINERARY_TIPS: { text: string; target: 'dayCards' | 'pencil' | 'help' | 'center' | 'addEvent' | 'location' | 'tickets' }[] = [
+    { text: 'Tap any day to expand it. Long press to rename or delete it.', target: 'dayCards' },
+    { text: "Press 'Add Event' to add an event.", target: 'addEvent' },
+    { text: 'Add the address or place name here — once saved, tap it in your itinerary to open it in Maps or copy it.', target: 'location' },
+    { text: 'Attach any tickets or PDFs here for easy access.', target: 'tickets' },
+    { text: "Tap Save to save your event. Use the pencil button to edit your itinerary, or tap '?' anytime to revisit these tips.", target: 'center' },
   ];
+
+  // Targets that live inside the Add Event modal — bubble must render in the modal tree.
+  const isModalTip = (target: string | undefined) => target === 'location' || target === 'tickets';
 
   useEffect(() => {
     if (activeTab === 'itinerary' && !itineraryTipsShownRef.current && tripId) {
@@ -549,7 +497,171 @@ export default function TripDetailsScreen() {
       });
       itineraryTipsShownRef.current = true;
     }
+    if (activeTab !== 'itinerary') setShowItineraryTips(false);
   }, [activeTab, tripId]);
+
+  // ─── Overview tips ────────────────────────────────────────────────────────
+  const [showOverviewTips, setShowOverviewTips] = useState(false);
+  const [overviewTipIndex, setOverviewTipIndex] = useState(0);
+  const [displayedOverviewTipIndex, setDisplayedOverviewTipIndex] = useState(0);
+  const overviewTipsShownRef = useRef(false);
+  const overviewHelpButtonRef = useRef<View>(null);
+  const overviewFlightsHeaderRef = useRef<View>(null);
+  const overviewHousingHeaderRef = useRef<View>(null);
+  const [overviewTipVisible, setOverviewTipVisible] = useState(false);
+  const overviewBubbleOpacity = useSharedValue(0);
+  const overviewBubbleScale = useSharedValue(0.88);
+  const [overviewTipPosition, setOverviewTipPosition] = useState<{ top?: number; bottom?: number }>({});
+  const [overviewArrowLeft, setOverviewArrowLeft] = useState(0);
+  const overviewBubbleAnimStyle = useAnimatedStyle(() => ({
+    opacity: overviewBubbleOpacity.value,
+    transform: [{ scale: overviewBubbleScale.value }],
+  }));
+
+  const OVERVIEW_TIPS = [
+    { text: 'Tap any section header to collapse or expand it.', target: 'flightsHeader' },
+    { text: 'Tap an airport code or housing address to get directions or copy it.', target: 'housingHeader' },
+  ];
+
+  const getOverviewTipNode = (target: string | undefined): View | null => {
+    if (target === 'flightsHeader') return overviewFlightsHeaderRef.current;
+    if (target === 'housingHeader') return overviewHousingHeaderRef.current;
+    return null;
+  };
+
+  const computeOverviewPosition = (x: number, y: number, w: number, h: number) => {
+    const screenH = Dimensions.get('window').height;
+    const screenW = Dimensions.get('window').width;
+    const bubbleMargin = 24;
+    return {
+      pos: { bottom: screenH - y + 8 } as { top?: number; bottom?: number },
+      arrow: x + w / 2 - bubbleMargin - 10,
+    };
+  };
+
+  // Auto-show on first visit to overview tab.
+  useEffect(() => {
+    if (activeTab === 'overview' && !overviewTipsShownRef.current && tripId) {
+      const key = `overview_tips_shown_${tripId}`;
+      AsyncStorage.getItem(key).then((val) => {
+        if (val !== 'true') {
+          setShowOverviewTips(true);
+          setOverviewTipIndex(0);
+          AsyncStorage.setItem(key, 'true');
+        }
+      });
+      overviewTipsShownRef.current = true;
+    }
+    if (activeTab !== 'overview') setShowOverviewTips(false);
+  }, [activeTab, tripId]);
+
+  // Open / close.
+  useEffect(() => {
+    if (!showOverviewTips) {
+      overviewBubbleOpacity.value = withTiming(0, { duration: 220 }, (finished) => {
+        if (finished) runOnJS(setOverviewTipVisible)(false);
+      });
+      overviewBubbleScale.value = withSpring(0.88, { damping: 26, stiffness: 200 });
+      return;
+    }
+    const tip = OVERVIEW_TIPS[overviewTipIndex];
+    setTimeout(() => {
+      const node = getOverviewTipNode(tip?.target);
+      const apply = (x: number, y: number, w: number, h: number) => {
+        const { pos, arrow } = computeOverviewPosition(x, y, w, h);
+        overviewBubbleScale.value = 0.88;
+        overviewBubbleOpacity.value = 0;
+        setOverviewTipPosition(pos);
+        setOverviewArrowLeft(arrow);
+        setDisplayedOverviewTipIndex(overviewTipIndex);
+        setOverviewTipVisible(true);
+        overviewBubbleScale.value = withSpring(1, { damping: 24, stiffness: 180 });
+        overviewBubbleOpacity.value = withTiming(1, { duration: 220 });
+      };
+      if (node) node.measureInWindow((x, y, w, h) => apply(x, y, w, h));
+      else apply(0, 0, 0, 0);
+    }, 50);
+  }, [showOverviewTips]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const applyMorphForCurrentOverviewTip = useCallback(() => {
+    const tip = OVERVIEW_TIPS[overviewTipIndex];
+    const node = getOverviewTipNode(tip?.target);
+    const apply = (x: number, y: number, w: number, h: number) => {
+      const { pos, arrow } = computeOverviewPosition(x, y, w, h);
+      setOverviewTipPosition(pos);
+      setOverviewArrowLeft(arrow);
+      setDisplayedOverviewTipIndex(overviewTipIndex);
+      overviewBubbleScale.value = 0.94;
+      overviewBubbleScale.value = withDelay(200, withSpring(1, { damping: 24, stiffness: 180 }));
+      overviewBubbleOpacity.value = withDelay(200, withTiming(1, { duration: 220 }));
+    };
+    if (node) node.measureInWindow((x, y, w, h) => apply(x, y, w, h));
+    else apply(0, 0, 0, 0);
+  }, [overviewTipIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Morph when index changes.
+  useEffect(() => {
+    if (!showOverviewTips || !overviewTipVisible) return;
+    overviewBubbleOpacity.value = withTiming(0, { duration: 250 }, (finished) => {
+      if (finished) runOnJS(applyMorphForCurrentOverviewTip)();
+    });
+  }, [overviewTipIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const renderOverviewTipBubble = () => {
+    if (!overviewTipVisible) return null;
+    const displayedTip = OVERVIEW_TIPS[displayedOverviewTipIndex];
+    return (
+      <View style={[StyleSheet.absoluteFill, { zIndex: 9999 }]} pointerEvents="box-none">
+        <RNAnimated.View
+          pointerEvents={showOverviewTips ? 'box-none' : 'none'}
+          style={[
+            styles.tipBubblePositioned,
+            { backgroundColor: colors.surface },
+            overviewTipPosition,
+            overviewBubbleAnimStyle,
+          ]}>
+          <View style={styles.tipDots}>
+            {OVERVIEW_TIPS.map((_, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.tipDot,
+                  {
+                    backgroundColor: i === displayedOverviewTipIndex ? colors.primary : colors.border,
+                    width: i === displayedOverviewTipIndex ? 18 : 6,
+                  },
+                ]}
+              />
+            ))}
+          </View>
+          <View style={{ gap: 6 }}>
+            <ThemedText style={[styles.tipLabel, { color: colors.primary }]}>TIP</ThemedText>
+            <ThemedText style={[styles.tipText, { color: colors.text }]}>{displayedTip?.text}</ThemedText>
+          </View>
+          <View style={styles.tipActions}>
+            <View />
+            {displayedOverviewTipIndex < OVERVIEW_TIPS.length - 1 ? (
+              <Pressable
+                style={[styles.tipPillButton, { backgroundColor: colors.primary }]}
+                onPress={() => setOverviewTipIndex((i) => i + 1)}>
+                <ThemedText style={styles.tipPillButtonText}>Next →</ThemedText>
+              </Pressable>
+            ) : (
+              <Pressable
+                style={[styles.tipPillButton, { backgroundColor: colors.primary }]}
+                onPress={() => {
+                  setShowOverviewTips(false);
+                  setOverviewTipIndex(0);
+                }}>
+                <ThemedText style={styles.tipPillButtonText}>Got it ✓</ThemedText>
+              </Pressable>
+            )}
+          </View>
+          <View style={[styles.tipArrowDown, { borderTopColor: colors.surface, left: overviewArrowLeft }]} />
+        </RNAnimated.View>
+      </View>
+    );
+  };
 
   const [dayModalVisible, setDayModalVisible] = useState(false);
   const [dayName, setDayName] = useState('');
@@ -682,17 +794,19 @@ export default function TripDetailsScreen() {
 
   const [expenseModalVisible, setExpenseModalVisible] = useState(false);
   const [expenseAmount, setExpenseAmount] = useState('');
+  const expenseAmountValue = Number.parseFloat(expenseAmount) || 0;
   const [expenseCurrency, setExpenseCurrency] = useState('USD');
   const [expenseName, setExpenseName] = useState('');
 
   const [expenseError, setExpenseError] = useState<string | null>(null);
-  const [currencyPickerVisible, setCurrencyPickerVisible] = useState(false);
-  const [currencySearch, setCurrencySearch] = useState('');
   const [expenseStep, setExpenseStep] = useState<'details' | 'split-type' | 'split-members'>('details');
   const [splitWith, setSplitWith] = useState<string[]>([]);
   const [splitMode, setSplitMode] = useState<'none' | 'even' | 'uneven'>('none');
   const [pendingSplitMode, setPendingSplitMode] = useState<'none' | 'even' | 'uneven'>('none');
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  const [paidBy, setPaidBy] = useState<string | null>(null);
+  const [paidByPickerVisible, setPaidByPickerVisible] = useState(false);
+  const [allTransfersExpanded, setAllTransfersExpanded] = useState(false);
 
   // ── Photos ──────────────────────────────────────────────────────────────
   const [photosUploading, setPhotosUploading] = useState(false);
@@ -1395,7 +1509,7 @@ export default function TripDetailsScreen() {
     return arr ? `${dow}, ${mon} ${day} ${dep} — ${arr}` : `${dow}, ${mon} ${day} ${dep}`;
   };
 
-  const openExpenseModal = (expense?: { id: string; name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }) => {
+  const openExpenseModal = (expense?: { id: string; name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[]; paidBy?: string; createdBy?: string }) => {
     if (expense) {
       setEditingExpenseId(expense.id);
       setExpenseAmount(String(expense.amount));
@@ -1405,6 +1519,7 @@ export default function TripDetailsScreen() {
       const mode = expense.isSplit ? (expense.splitType === 'even' ? 'even' : 'uneven') : 'none';
       setSplitMode(mode);
       setPendingSplitMode(mode);
+      setPaidBy(expense.paidBy ?? expense.createdBy ?? uid ?? null);
     } else {
       setEditingExpenseId(null);
       setExpenseAmount('');
@@ -1413,6 +1528,7 @@ export default function TripDetailsScreen() {
       setSplitWith([]);
       setSplitMode('none');
       setPendingSplitMode('none');
+      setPaidBy(uid ?? null);
     }
     setExpenseStep('details');
     setExpenseError(null);
@@ -1939,6 +2055,7 @@ export default function TripDetailsScreen() {
             ) : null}
 
             <ThemedView style={[styles.flightCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+              <View ref={overviewFlightsHeaderRef} collapsable={false}>
               <Pressable style={styles.flightHeaderRow} onPress={() => toggleSection(setOverviewFlightsCollapsed)}>
                 <View style={styles.sectionHeaderLeft}>
                   <IconSymbol
@@ -1965,6 +2082,7 @@ export default function TripDetailsScreen() {
                   </Pressable>
                 </View>
               </Pressable>
+              </View>
 
               {overviewFlightsCollapsed ? null : sortedFlights.length > 0 ? (
                 <View style={styles.flightsList}>
@@ -2072,6 +2190,7 @@ export default function TripDetailsScreen() {
             </ThemedView>
 
             <ThemedView style={[styles.housingCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+              <View ref={overviewHousingHeaderRef} collapsable={false}>
               <Pressable style={styles.housingHeaderRow} onPress={() => toggleSection(setOverviewHousingCollapsed)}>
                 <View style={styles.sectionHeaderLeft}>
                   <IconSymbol
@@ -2098,6 +2217,7 @@ export default function TripDetailsScreen() {
                   </Pressable>
                 </View>
               </Pressable>
+              </View>
 
               {overviewHousingCollapsed ? null : tripHousing.length > 0 ? (
                 <View style={styles.housingList}>
@@ -2838,26 +2958,11 @@ export default function TripDetailsScreen() {
                     if (!a.date) return 1;
                     if (!b.date) return -1;
                     return a.date.localeCompare(b.date);
-                  }).map((day) => {
+                  }).map((day, idx) => {
                     const isExpanded = expandedDayIds.has(day.id);
                     return (
-                      <SwipeableDayCard
-                        key={day.id}
-                        colors={colors}
-                        onDelete={() => {
-                          if (!tripId) return;
-                          sharedTrip ? deleteSharedItineraryDay(sharedTrip.id, day.id) : deleteItineraryDay(tripId, day.id);
-                          setExpandedDayIds((prev) => {
-                            const next = new Set(prev);
-                            next.delete(day.id);
-                            return next;
-                          });
-                        }}
-                        onEdit={() => {
-                          setEditingDayId(day.id);
-                          setDayName(day.label);
-                          setDayModalVisible(true);
-                        }}>
+                      <View key={day.id} ref={(node) => { if (node) dayCardRefs.current.set(day.id, node); else dayCardRefs.current.delete(day.id); }} collapsable={false}>
+                      <DayCard>
                       <View
                         style={[styles.dayCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
                         <Pressable
@@ -2865,10 +2970,45 @@ export default function TripDetailsScreen() {
                           onPress={() => {
                             setExpandedDayIds((prev) => {
                               const next = new Set(prev);
-                              if (next.has(day.id)) next.delete(day.id);
-                              else next.add(day.id);
+                              if (next.has(day.id)) {
+                                next.delete(day.id);
+                              } else {
+                                next.add(day.id);
+                                lastExpandedDayIdRef.current = day.id;
+                              }
                               return next;
                             });
+                            if (showItineraryTips && itineraryTipIndex === 0) {
+                              setItineraryTipIndex(1);
+                            }
+                          }}
+                          onLongPress={() => {
+                            Alert.alert(day.label, undefined, [
+                              {
+                                text: 'Rename',
+                                onPress: () => {
+                                  setEditingDayId(day.id);
+                                  setDayName(day.label);
+                                  setDayModalVisible(true);
+                                },
+                              },
+                              {
+                                text: 'Delete',
+                                style: 'destructive',
+                                onPress: () => {
+                                  if (!tripId) return;
+                                  sharedTrip
+                                    ? deleteSharedItineraryDay(sharedTrip.id, day.id)
+                                    : deleteItineraryDay(tripId, day.id);
+                                  setExpandedDayIds((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete(day.id);
+                                    return next;
+                                  });
+                                },
+                              },
+                              { text: 'Cancel', style: 'cancel' },
+                            ]);
                           }}>
                           <View style={{ flex: 1 }}>
                             <ThemedText style={styles.dayCardTitle}>{day.label}</ThemedText>
@@ -2954,7 +3094,7 @@ export default function TripDetailsScreen() {
                                           const query = encodeURIComponent(e.location!);
                                           Alert.alert(
                                             e.location!,
-                                            'Open in maps',
+                                            'Open in maps or copy',
                                             [
                                               {
                                                 text: 'Google Maps',
@@ -2963,6 +3103,10 @@ export default function TripDetailsScreen() {
                                               {
                                                 text: 'Apple Maps',
                                                 onPress: () => Linking.openURL(`maps://?q=${query}`),
+                                              },
+                                              {
+                                                text: 'Copy',
+                                                onPress: () => Clipboard.setStringAsync(e.location!),
                                               },
                                               { text: 'Cancel', style: 'cancel' },
                                             ],
@@ -3001,6 +3145,11 @@ export default function TripDetailsScreen() {
                             )}
 
                             <Pressable
+                              ref={(node) => {
+                                if (node) addEventRefs.current.set(day.id, node);
+                                else addEventRefs.current.delete(day.id);
+                              }}
+                              collapsable={false}
                               style={[styles.addEventInlineButton, { borderColor: colors.border }]}
                               onPress={() => {
                                 setSelectedDayId(day.id);
@@ -3013,6 +3162,8 @@ export default function TripDetailsScreen() {
                                 setEventError(null);
                                 setEditingEventId(null);
                                 setEventModalVisible(true);
+                                // The tip-2 → tip-3 transition is triggered by the Modal's onShow
+                                // so the modal is fully laid out before we measure inside it.
                               }}>
                               <IconSymbol name="plus" size={16} color={colors.primary} />
                               <ThemedText style={[styles.addEventInlineText, { color: colors.primary }]}>Add Event</ThemedText>
@@ -3020,7 +3171,8 @@ export default function TripDetailsScreen() {
                           </View>
                         ) : null}
                       </View>
-                      </SwipeableDayCard>
+                      </DayCard>
+                      </View>
                     );
                   })
                 ) : (
@@ -3129,7 +3281,17 @@ export default function TripDetailsScreen() {
               </View>
             </Modal>
 
-            <Modal visible={eventModalVisible} transparent animationType="fade">
+            <Modal
+              visible={eventModalVisible}
+              transparent
+              animationType={showItineraryTips && itineraryTipIndex === 1 ? 'none' : 'fade'}
+              onShow={() => {
+                // Modal is fully presented + laid out — safe to advance the tour
+                // into a tip that anchors on a field inside the modal.
+                if (showItineraryTips && itineraryTipIndex === 1) {
+                  setItineraryTipIndex(2);
+                }
+              }}>
               <View style={styles.modalOverlay}>
                 <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
                   <ThemedText style={styles.modalTitle}>{editingEventId ? 'Edit Event' : 'Add Event'}</ThemedText>
@@ -3143,14 +3305,16 @@ export default function TripDetailsScreen() {
                     style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
                   />
 
-                  <ThemedText style={styles.eventModalSectionLabel}>Location</ThemedText>
-                  <TextInput
-                    value={eventLocation}
-                    onChangeText={setEventLocation}
-                    placeholder="Address or place name (optional)"
-                    placeholderTextColor="#888"
-                    style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                  />
+                  <View ref={locationFieldRef} collapsable={false}>
+                    <ThemedText style={styles.eventModalSectionLabel}>Location</ThemedText>
+                    <TextInput
+                      value={eventLocation}
+                      onChangeText={setEventLocation}
+                      placeholder="Address or place name (optional)"
+                      placeholderTextColor="#888"
+                      style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
+                    />
+                  </View>
 
                   <ThemedText style={styles.eventModalSectionLabel}>Time</ThemedText>
                   <View style={[styles.timePickerContainer, { borderColor: colors.border }]}>
@@ -3158,6 +3322,7 @@ export default function TripDetailsScreen() {
                       value={eventTimeDate}
                       mode="time"
                       display="spinner"
+                      minuteInterval={5}
                       onChange={(_event: DateTimePickerEvent, date?: Date) => {
                         if (date instanceof Date && !Number.isNaN(date.getTime())) {
                           setEventTimeDate(date);
@@ -3178,45 +3343,47 @@ export default function TripDetailsScreen() {
                   />
 
                   {/* Tickets section */}
-                  <ThemedText style={styles.eventModalSectionLabel}>Tickets</ThemedText>
-                  {eventTickets.length > 0 ? (
-                    <View style={styles.ticketList}>
-                      {eventTickets.map((ticket) => (
-                        <View key={ticket.id} style={[styles.ticketRow, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
-                          <IconSymbol
-                            name={ticket.type === 'pdf' ? 'doc.fill' : 'photo'}
-                            size={16}
-                            color={colors.primary}
-                          />
-                          <ThemedText
-                            style={[styles.ticketName, { color: colors.text }]}
-                            numberOfLines={1}
-                            onPress={() => WebBrowser.openBrowserAsync(ticket.url)}>
-                            {ticket.name}
-                          </ThemedText>
-                          <Pressable
-                            hitSlop={8}
-                            onPress={() => setEventTickets((prev) => prev.filter((t) => t.id !== ticket.id))}>
-                            <IconSymbol name="trash" size={15} color={colors.destructive} />
-                          </Pressable>
-                        </View>
-                      ))}
-                    </View>
-                  ) : null}
+                  <View ref={ticketsFieldRef} collapsable={false}>
+                    <ThemedText style={styles.eventModalSectionLabel}>Tickets</ThemedText>
+                    {eventTickets.length > 0 ? (
+                      <View style={styles.ticketList}>
+                        {eventTickets.map((ticket) => (
+                          <View key={ticket.id} style={[styles.ticketRow, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+                            <IconSymbol
+                              name={ticket.type === 'pdf' ? 'doc.fill' : 'photo'}
+                              size={16}
+                              color={colors.primary}
+                            />
+                            <ThemedText
+                              style={[styles.ticketName, { color: colors.text }]}
+                              numberOfLines={1}
+                              onPress={() => WebBrowser.openBrowserAsync(ticket.url)}>
+                              {ticket.name}
+                            </ThemedText>
+                            <Pressable
+                              hitSlop={8}
+                              onPress={() => setEventTickets((prev) => prev.filter((t) => t.id !== ticket.id))}>
+                              <IconSymbol name="trash" size={15} color={colors.destructive} />
+                            </Pressable>
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
 
-                  {ticketUploading ? (
-                    <View style={styles.ticketUploadingRow}>
-                      <ActivityIndicator size="small" color={colors.primary} />
-                      <ThemedText style={[styles.ticketUploadingText, { color: colors.icon }]}>Uploading…</ThemedText>
-                    </View>
-                  ) : (
-                    <Pressable
-                      style={[styles.ticketAttachButton, { borderColor: colors.primary }]}
-                      onPress={handleAttachTicket}>
-                      <IconSymbol name="plus" size={15} color={colors.primary} />
-                      <ThemedText style={[styles.ticketAttachText, { color: colors.primary }]}>Attach Ticket / PDF</ThemedText>
-                    </Pressable>
-                  )}
+                    {ticketUploading ? (
+                      <View style={styles.ticketUploadingRow}>
+                        <ActivityIndicator size="small" color={colors.primary} />
+                        <ThemedText style={[styles.ticketUploadingText, { color: colors.icon }]}>Uploading…</ThemedText>
+                      </View>
+                    ) : (
+                      <Pressable
+                        style={[styles.ticketAttachButton, { borderColor: colors.primary }]}
+                        onPress={handleAttachTicket}>
+                        <IconSymbol name="plus" size={15} color={colors.primary} />
+                        <ThemedText style={[styles.ticketAttachText, { color: colors.primary }]}>Attach Ticket / PDF</ThemedText>
+                      </Pressable>
+                    )}
+                  </View>
 
                   {eventError ? <ThemedText style={styles.modalErrorText}>{eventError}</ThemedText> : null}
                   </ScrollView>
@@ -3232,6 +3399,11 @@ export default function TripDetailsScreen() {
                         setEventTickets([]);
                         setEventError(null);
                         setEditingEventId(null);
+                        // Closing the modal during the tour ends it.
+                        if (showItineraryTips && isModalTip(ITINERARY_TIPS[itineraryTipIndex]?.target)) {
+                          setShowItineraryTips(false);
+                          setItineraryTipIndex(0);
+                        }
                       }}>
                       <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
                     </Pressable>
@@ -3261,6 +3433,8 @@ export default function TripDetailsScreen() {
                               name,
                               time,
                               location: location ? location : undefined,
+                              notes: notes ? notes : undefined,
+                              tickets: eventTickets,
                             });
                           } else {
                             updateItineraryEvent(tripId, selectedDayId, editingEventId, {
@@ -3273,7 +3447,7 @@ export default function TripDetailsScreen() {
                           }
                         } else {
                           if (sharedTrip) {
-                            addSharedItineraryEvent(sharedTrip.id, selectedDayId, name, time, location ? location : undefined);
+                            addSharedItineraryEvent(sharedTrip.id, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets);
                           } else {
                             addItineraryEvent(tripId, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets);
                           }
@@ -3287,11 +3461,19 @@ export default function TripDetailsScreen() {
                         setEventTickets([]);
                         setEventError(null);
                         setEditingEventId(null);
+                        // Saving while on a modal tip ends the tour.
+                        if (showItineraryTips && isModalTip(ITINERARY_TIPS[itineraryTipIndex]?.target)) {
+                          setShowItineraryTips(false);
+                          setItineraryTipIndex(0);
+                        }
                       }}>
                       <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Save</ThemedText>
                     </Pressable>
                   </View>
                 </View>
+
+                {/* Tips that anchor to fields inside this modal render here so they sit above the modal layer. */}
+                {isModalTip(ITINERARY_TIPS[displayedTipIndex]?.target) && renderTipBubble()}
               </View>
             </Modal>
 
@@ -3314,13 +3496,14 @@ export default function TripDetailsScreen() {
               {(() => {
                 const myShareByCurrency = expenses.reduce<Record<string, number>>((acc, e) => {
                   const currency = e.currency || 'USD';
-                  const isCreator = !sharedTrip || e.createdBy === uid || !e.createdBy;
+                  const payer = e.paidBy ?? e.createdBy;
+                  const isPayer = !sharedTrip || payer === uid || !payer;
                   const isSplitWithMe = e.splitWith?.includes(uid ?? '') ?? false;
                   let share = 0;
                   if (e.isSplit && e.splitType === 'even' && e.splitWith && e.splitWith.length > 0) {
                     const perPerson = e.amount / (e.splitWith.length + 1);
-                    if (isCreator || isSplitWithMe) share = perPerson;
-                  } else if (isCreator) {
+                    if (isPayer || isSplitWithMe) share = perPerson;
+                  } else if (isPayer) {
                     share = e.amount;
                   }
                   acc[currency] = (acc[currency] ?? 0) + share;
@@ -3364,9 +3547,10 @@ export default function TripDetailsScreen() {
 
             {(() => {
               const myExpenses = expenses.filter((e) => {
-                const isCreator = !sharedTrip || e.createdBy === uid || !e.createdBy;
+                const payer = e.paidBy ?? e.createdBy;
+                const isPayer = !sharedTrip || payer === uid || !payer;
                 const isSplitWithMe = e.splitWith?.includes(uid ?? '') ?? false;
-                return isCreator || isSplitWithMe;
+                return isPayer || isSplitWithMe;
               });
               return myExpenses.length > 0 ? (
               <ThemedView style={styles.financesList}>
@@ -3384,6 +3568,8 @@ export default function TripDetailsScreen() {
                         isSplit: e.isSplit,
                         splitType: e.splitType,
                         splitWith: e.splitWith,
+                        paidBy: e.paidBy,
+                        createdBy: e.createdBy,
                       });
                     }}>
                     <View style={styles.financeHeaderRow}>
@@ -3443,6 +3629,8 @@ export default function TripDetailsScreen() {
                                 isSplit: e.isSplit,
                                 splitType: e.splitType,
                                 splitWith: e.splitWith,
+                                paidBy: e.paidBy,
+                                createdBy: e.createdBy,
                               });
                             }}>
                             <ThemedText style={[styles.inlineActionText, { color: colors.primary }]}>Edit</ThemedText>
@@ -3477,6 +3665,175 @@ export default function TripDetailsScreen() {
             );
             })()}
 
+            {/* Settle Up — only for shared trips with 2+ accepted members */}
+            {(() => {
+              if (!sharedTrip) return null;
+              const members = tripPeople;
+              if (members.length < 2) return null;
+
+              const splitExpenses = expenses.filter((e) =>
+                e.isSplit && e.splitType === 'even' && e.splitWith && e.splitWith.length > 0
+              );
+              if (!splitExpenses.length) return null;
+
+              // Net balance per member (positive = owed money; negative = owes money)
+              const balances: Record<string, number> = {};
+              for (const m of members) balances[m.id] = 0;
+
+              let skippedCount = 0;
+              const skippedCurrencies = new Set<string>();
+              for (const e of splitExpenses) {
+                const payer = e.paidBy ?? e.createdBy;
+                if (!payer || !Object.prototype.hasOwnProperty.call(balances, payer)) { skippedCount++; continue; }
+                const converted = convertToHome(e.amount, e.currency || homeCurrency);
+                if (converted === null) {
+                  skippedCount++;
+                  skippedCurrencies.add(e.currency || '?');
+                  continue;
+                }
+                const validOthers = (e.splitWith ?? []).filter(
+                  (id) => id !== payer && Object.prototype.hasOwnProperty.call(balances, id),
+                );
+                const participants = [payer, ...validOthers];
+                const n = participants.length;
+                if (n < 2) continue;
+                const share = converted / n;
+                balances[payer] += converted - share;
+                for (const pid of validOthers) balances[pid] -= share;
+              }
+
+              // Greedy min-transfer matching
+              const EPS = 0.01;
+              const creditors = Object.entries(balances)
+                .filter(([, v]) => v > EPS)
+                .map(([id, v]) => ({ id, amount: v }))
+                .sort((a, b) => b.amount - a.amount);
+              const debtors = Object.entries(balances)
+                .filter(([, v]) => v < -EPS)
+                .map(([id, v]) => ({ id, amount: -v }))
+                .sort((a, b) => b.amount - a.amount);
+
+              const transfers: { from: string; to: string; amount: number }[] = [];
+              let ci = 0, di = 0;
+              while (ci < creditors.length && di < debtors.length) {
+                const cr = creditors[ci];
+                const dr = debtors[di];
+                const pay = Math.min(cr.amount, dr.amount);
+                if (pay > EPS) {
+                  transfers.push({ from: dr.id, to: cr.id, amount: pay });
+                }
+                cr.amount -= pay;
+                dr.amount -= pay;
+                if (cr.amount < EPS) ci++;
+                if (dr.amount < EPS) di++;
+              }
+
+              const nameOf = (id: string) =>
+                id === uid ? 'You' : (members.find((m) => m.id === id)?.name ?? '—');
+
+              const settlements = sharedTrip.settlements ?? [];
+              const isSettled = (from: string, to: string) =>
+                settlements.some((s) => s.from === from && s.to === to);
+              const toggleSettlement = (from: string, to: string) => {
+                if (isSettled(from, to)) {
+                  unmarkSettled(sharedTrip.id, from, to);
+                } else {
+                  markSettled(sharedTrip.id, from, to);
+                }
+              };
+
+              const youTransfers = transfers.filter((t) => t.from === uid || t.to === uid);
+              const otherTransfers = transfers.filter((t) => t.from !== uid && t.to !== uid);
+
+              // A transfer row with optional checkbox
+              const TransferRow = ({
+                t, rowKey, showCheck,
+              }: { t: { from: string; to: string; amount: number }; rowKey: string; showCheck: boolean }) => {
+                const settled = isSettled(t.from, t.to);
+                const isDebtor = t.from === uid;
+                const canToggle = showCheck && (isDebtor || settled);
+                return (
+                  <Pressable
+                    key={rowKey}
+                    onPress={canToggle ? () => toggleSettlement(t.from, t.to) : undefined}
+                    style={[styles.settleRow, settled && { opacity: 0.45 }]}>
+                    {showCheck && (
+                      <View style={[
+                        styles.settleCheckbox,
+                        { borderColor: settled ? colors.primary : (canToggle ? colors.border : 'transparent'), backgroundColor: settled ? colors.primary : colors.surface },
+                      ]}>
+                        {settled && <ThemedText style={{ color: '#fff', fontSize: 10, lineHeight: 14 }}>✓</ThemedText>}
+                      </View>
+                    )}
+                    <ThemedText style={{ color: colors.text, flex: 1, textDecorationLine: settled ? 'line-through' : 'none' }}>
+                      {t.from === uid
+                        ? `You owe ${nameOf(t.to)}`
+                        : t.to === uid
+                        ? `${nameOf(t.from)} owes you`
+                        : `${nameOf(t.from)} owes ${nameOf(t.to)}`}
+                    </ThemedText>
+                    <ThemedText style={{
+                      fontWeight: '700',
+                      color: settled ? colors.icon : (t.from === uid ? colors.destructive : (t.to === uid ? colors.primary : colors.text)),
+                    }}>
+                      {t.amount.toFixed(2)} {homeCurrency}
+                    </ThemedText>
+                  </Pressable>
+                );
+              };
+
+              const allSettled = transfers.length > 0 && transfers.every((t) => isSettled(t.from, t.to));
+
+              return (
+                <ThemedView style={[styles.financeCard, { borderColor: colors.border, backgroundColor: colors.surface, marginTop: 12 }]}>
+                  <ThemedText style={[styles.financesTotalLabel, { marginBottom: 8 }]}>Settle Up</ThemedText>
+
+                  {skippedCount > 0 && (
+                    <ThemedText style={[styles.financeMeta, { color: colors.icon, marginBottom: 8 }]}>
+                      {skippedCount === 1 ? '1 expense' : `${skippedCount} expenses`}
+                      {skippedCurrencies.size > 0 ? ` in ${Array.from(skippedCurrencies).join(', ')}` : ''}
+                      {' couldn\'t be converted — rate unavailable.'}
+                    </ThemedText>
+                  )}
+
+                  {transfers.length === 0 || allSettled ? (
+                    <ThemedText style={[styles.financeMeta, { color: colors.icon }]}>
+                      You&apos;re all settled up 🎉
+                    </ThemedText>
+                  ) : null}
+
+                  {transfers.length > 0 && (
+                    <>
+                      {youTransfers.length > 0 && (
+                        <View style={{ marginBottom: 8 }}>
+                          <ThemedText style={[styles.checkboxLabel, { marginBottom: 4 }]}>You</ThemedText>
+                          {youTransfers.map((t, i) => (
+                            <TransferRow key={`you-${i}`} t={t} rowKey={`you-${i}`} showCheck />
+                          ))}
+                        </View>
+                      )}
+
+                      {otherTransfers.length > 0 && (
+                        <>
+                          <Pressable
+                            onPress={() => setAllTransfersExpanded((v) => !v)}
+                            style={[styles.settleRow, { paddingVertical: 6 }]}>
+                            <ThemedText style={{ color: colors.icon, flex: 1, fontWeight: '600' }}>
+                              {`All transfers (${otherTransfers.length})`}
+                            </ThemedText>
+                            <IconSymbol name={allTransfersExpanded ? 'chevron.down' : 'chevron.right'} size={14} color={colors.icon} />
+                          </Pressable>
+                          {allTransfersExpanded && otherTransfers.map((t, i) => (
+                            <TransferRow key={`all-${i}`} t={t} rowKey={`all-${i}`} showCheck={false} />
+                          ))}
+                        </>
+                      )}
+                    </>
+                  )}
+                </ThemedView>
+              );
+            })()}
+
             <Modal visible={expenseModalVisible} transparent animationType="fade">
               <View style={styles.modalOverlay}>
                 <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
@@ -3490,91 +3847,90 @@ export default function TripDetailsScreen() {
                     style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
                   />
 
-                  <TextInput
-                    value={expenseAmount}
-                    onChangeText={setExpenseAmount}
-                    placeholder="Amount"
-                    placeholderTextColor="#888"
-                    keyboardType="decimal-pad"
-                    style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
-                  />
-
-                  <Pressable
-                    onPress={() => { setCurrencySearch(''); setCurrencyPickerVisible(true); }}
-                    style={[styles.modalInput, { borderColor: colors.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
-                    <ThemedText style={{ color: colors.inputText, fontSize: 16 }}>
-                      {expenseCurrency} — {CURRENCIES.find(c => c.code === expenseCurrency)?.name ?? expenseCurrency}
+                  <View style={[styles.modalInput, { borderColor: colors.border, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12 }]}>
+                    <ThemedText style={{ fontSize: 16, fontWeight: '600', color: colors.icon, marginRight: 8 }}>
+                      {CURRENCY_SYMBOLS[expenseCurrency] ?? expenseCurrency}
                     </ThemedText>
-                    <IconSymbol name="chevron.down" size={16} color={colors.icon} />
-                  </Pressable>
+                    <TextInput
+                      value={expenseAmount}
+                      onChangeText={setExpenseAmount}
+                      placeholder="Amount"
+                      placeholderTextColor="#888"
+                      keyboardType="decimal-pad"
+                      style={{ flex: 1, fontSize: 16, color: colors.inputText, paddingVertical: 0 }}
+                    />
+                  </View>
 
-                  <Modal visible={currencyPickerVisible} transparent animationType="fade">
+                  {(() => {
+                    const destCurrency = inferDestinationCurrency(trip?.destination ?? '');
+                    const chips = [
+                      { label: 'Home', code: homeCurrency },
+                      ...(destCurrency && destCurrency !== homeCurrency
+                        ? [{ label: 'Destination', code: destCurrency }]
+                        : []),
+                    ];
+                    return (
+                      <View style={{ flexDirection: 'row', gap: 8, marginBottom: 4 }}>
+                        {chips.map(chip => {
+                          const isActive = expenseCurrency === chip.code;
+                          return (
+                            <Pressable
+                              key={chip.code}
+                              onPress={() => setExpenseCurrency(chip.code)}
+                              style={[
+                                styles.currencyChip,
+                                {
+                                  borderColor: isActive ? colors.primary : colors.border,
+                                  backgroundColor: isActive ? colors.primary + '18' : colors.surfaceMuted,
+                                },
+                              ]}>
+                              <ThemedText style={{ fontSize: 15, fontWeight: '800', color: isActive ? colors.primary : colors.text }}>
+                                {chip.code}
+                              </ThemedText>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    );
+                  })()}
+
+                  {/* Paid by — only for shared trips */}
+                  {sharedTrip && (
+                    <Pressable
+                      style={[styles.checkboxRow, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
+                      onPress={() => setPaidByPickerVisible(true)}>
+                      <ThemedText style={[styles.checkboxLabel, { flex: 1 }]}>Paid by</ThemedText>
+                      <ThemedText style={{ color: colors.primary, fontSize: 13, fontWeight: '600' }}>
+                        {paidBy === uid ? 'You' : (tripPeople.find((p) => p.id === paidBy)?.name ?? '—')}
+                      </ThemedText>
+                      <IconSymbol name="chevron.right" size={14} color={colors.icon} style={{ marginLeft: 4 }} />
+                    </Pressable>
+                  )}
+
+                  {/* Paid-by picker modal */}
+                  <Modal visible={paidByPickerVisible} transparent animationType="slide">
                     <View style={styles.modalOverlay}>
                       <View style={[styles.modalCard, { backgroundColor: colors.surface, maxHeight: '70%' }]}>
-                        <ThemedText style={styles.modalTitle}>Select Currency</ThemedText>
-
-                        {/* Quick-pick chips */}
-                        {(() => {
-                          const destCurrency = inferDestinationCurrency(trip?.destination ?? '');
-                          const chips = [
-                            { label: 'Home', code: homeCurrency },
-                            ...(destCurrency && destCurrency !== homeCurrency
-                              ? [{ label: 'Destination', code: destCurrency }]
-                              : []),
-                          ];
-                          return (
-                            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
-                              {chips.map(chip => {
-                                const isActive = expenseCurrency === chip.code;
-                                return (
-                                  <Pressable
-                                    key={chip.code}
-                                    onPress={() => { setExpenseCurrency(chip.code); setCurrencyPickerVisible(false); }}
-                                    style={[
-                                      styles.currencyChip,
-                                      {
-                                        borderColor: isActive ? colors.primary : colors.border,
-                                        backgroundColor: isActive ? colors.primary + '18' : colors.surfaceMuted,
-                                      },
-                                    ]}>
-                                    <ThemedText style={{ fontSize: 11, color: colors.icon, fontWeight: '600' }}>
-                                      {chip.label}
-                                    </ThemedText>
-                                    <ThemedText style={{ fontSize: 14, fontWeight: '800', color: isActive ? colors.primary : colors.text }}>
-                                      {chip.code}
-                                    </ThemedText>
-                                  </Pressable>
-                                );
-                              })}
-                            </View>
-                          );
-                        })()}
-
-                        <TextInput
-                          value={currencySearch}
-                          onChangeText={setCurrencySearch}
-                          placeholder="Search..."
-                          placeholderTextColor="#888"
-                          autoFocus
-                          style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText, marginBottom: 8 }]}
-                        />
-                        <ScrollView keyboardShouldPersistTaps="handled">
-                          {CURRENCIES.filter(c =>
-                            c.code.toLowerCase().includes(currencySearch.toLowerCase()) ||
-                            c.name.toLowerCase().includes(currencySearch.toLowerCase())
-                          ).map(c => (
-                            <Pressable
-                              key={c.code}
-                              onPress={() => { setExpenseCurrency(c.code); setCurrencyPickerVisible(false); }}
-                              style={[styles.currencyRow, { borderBottomColor: colors.border }, expenseCurrency === c.code && { backgroundColor: colors.surfaceMuted }]}>
-                              <ThemedText style={{ fontWeight: '700', color: colors.text }}>{c.code}</ThemedText>
-                              <ThemedText style={{ color: colors.icon, fontSize: 13 }}>{c.name}</ThemedText>
-                            </Pressable>
-                          ))}
+                        <ThemedText style={styles.modalTitle}>Paid by</ThemedText>
+                        <ScrollView style={{ marginBottom: 8 }}>
+                          {tripPeople.map((p) => {
+                            const selected = paidBy === p.id;
+                            return (
+                              <Pressable
+                                key={p.id}
+                                style={[styles.currencyRow, { borderBottomColor: colors.border, alignItems: 'center' }, selected && { backgroundColor: colors.surfaceMuted }]}
+                                onPress={() => { setPaidBy(p.id); setPaidByPickerVisible(false); }}>
+                                <View style={[styles.checkboxBox, { borderColor: selected ? colors.primary : colors.border, backgroundColor: selected ? colors.primary : colors.surface, marginRight: 10, flexShrink: 0 }]} />
+                                <ThemedText style={{ color: colors.text, flex: 1 }}>
+                                  {p.id === uid ? 'You' : p.name}
+                                </ThemedText>
+                              </Pressable>
+                            );
+                          })}
                         </ScrollView>
                         <Pressable
-                          style={[styles.modalButton, { borderColor: colors.border, marginTop: 8, alignSelf: 'center' }]}
-                          onPress={() => setCurrencyPickerVisible(false)}>
+                          style={[styles.modalButton, { borderColor: colors.border, alignSelf: 'center' }]}
+                          onPress={() => setPaidByPickerVisible(false)}>
                           <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
                         </Pressable>
                       </View>
@@ -3659,12 +4015,12 @@ export default function TripDetailsScreen() {
                         <ThemedText style={styles.modalTitle}>Split With</ThemedText>
                         {splitWith.length > 0 && (
                           <ThemedText style={{ color: colors.primary, fontSize: 13, marginBottom: 8, textAlign: 'center', fontWeight: '600' }}>
-                            {expenseCurrency} {((Number.parseFloat(expenseAmount) || 0) / (splitWith.length + 1)).toFixed(2)} per person
+                            {expenseCurrency} {(expenseAmountValue / (splitWith.length + 1)).toFixed(2)} per person
                           </ThemedText>
                         )}
                         <ScrollView style={{ marginBottom: 8 }}>
                           {tripPeople
-                            .filter((p) => p.id !== uid)
+                            .filter((p) => p.id !== (paidBy ?? uid))
                             .map((p) => {
                               const selected = splitWith.includes(p.id);
                               return (
@@ -3676,7 +4032,7 @@ export default function TripDetailsScreen() {
                                   <ThemedText style={{ color: colors.text, flex: 1 }}>{p.name}</ThemedText>
                                   {selected && (
                                     <ThemedText style={{ color: colors.icon, fontSize: 12 }}>
-                                      {expenseCurrency} {((Number.parseFloat(expenseAmount) || 0) / (splitWith.length + 1)).toFixed(2)}
+                                      {expenseCurrency} {(expenseAmountValue / (splitWith.length + 1)).toFixed(2)}
                                     </ThemedText>
                                   )}
                                 </Pressable>
@@ -3726,7 +4082,7 @@ export default function TripDetailsScreen() {
                       onPress={() => {
                         if (!tripId) return;
                         const currency = expenseCurrency.trim().toUpperCase();
-                        const amount = Number.parseFloat(expenseAmount);
+                        const amount = expenseAmountValue;
 
                         if (!expenseName.trim()) {
                           setExpenseError('Name is required.');
@@ -3741,13 +4097,16 @@ export default function TripDetailsScreen() {
                         const splitType: 'even' | undefined = splitMode === 'even' ? 'even' : undefined;
 
                         if (editingExpenseId) {
+                          const effectivePayer = paidBy ?? uid ?? undefined;
+                          const cleanedSplitWith = splitMode === 'even' ? splitWith.filter((id) => id !== effectivePayer) : [];
                           const expenseUpdates = {
                             name: expenseName.trim(),
                             amount,
                             currency,
                             isSplit,
                             splitType,
-                            splitWith: splitMode === 'even' ? splitWith : [],
+                            splitWith: cleanedSplitWith,
+                            paidBy: effectivePayer,
                           };
                           if (sharedTrip) {
                             updateSharedExpense(sharedTrip.id, editingExpenseId, expenseUpdates);
@@ -3755,13 +4114,16 @@ export default function TripDetailsScreen() {
                             updateExpense(tripId, editingExpenseId, expenseUpdates);
                           }
                         } else {
+                          const effectivePayerNew = paidBy ?? uid ?? undefined;
+                          const cleanedSplitWithNew = splitMode === 'even' ? splitWith.filter((id) => id !== effectivePayerNew) : [];
                           const newExpense = {
                             name: expenseName.trim(),
                             amount,
                             currency,
                             isSplit,
                             splitType,
-                            splitWith: splitMode === 'even' ? splitWith : [],
+                            splitWith: cleanedSplitWithNew,
+                            paidBy: effectivePayerNew,
                           };
                           if (sharedTrip) {
                             addSharedExpense(sharedTrip.id, newExpense);
@@ -3803,13 +4165,13 @@ export default function TripDetailsScreen() {
                   return (
                     <View key={entry.id} style={[styles.journalCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
                       <View style={styles.journalHeaderRow}>
-                        <ThemedText style={[styles.journalDate, { color: colors.text }]}>
+                        <ThemedText style={[styles.journalDate, { color: colors.text, flex: 1 }]}>
                           <ThemedText style={{ fontWeight: '700' }}>{actorName}</ThemedText>
                           {` ${entry.action} `}
                           <ThemedText style={{ color: colors.primary }}>{entry.section}</ThemedText>
                           {entry.detail ? `: ${entry.detail}` : ''}
                         </ThemedText>
-                        <ThemedText style={[styles.journalDate, { color: colors.icon }]}>{timeAgo}</ThemedText>
+                        <ThemedText style={[styles.journalDate, { color: colors.icon, flexShrink: 0 }]}>{timeAgo}</ThemedText>
                       </View>
                     </View>
                   );
@@ -4091,12 +4453,92 @@ export default function TripDetailsScreen() {
     }
   };
 
+  // Renders the tip bubble. Called from two places:
+  // - the main tree (for tips whose target lives outside any modal)
+  // - inside the Add Event modal (for tips whose target is a field within it)
+  const renderTipBubble = () => {
+    if (!tipVisible) return null;
+    const displayedTip = ITINERARY_TIPS[displayedTipIndex];
+
+    return (
+      <View style={[StyleSheet.absoluteFill, { zIndex: 9999 }]} pointerEvents="box-none">
+        <RNAnimated.View
+          pointerEvents={showItineraryTips ? 'box-none' : 'none'}
+          style={[
+            styles.tipBubblePositioned,
+            { backgroundColor: colors.surface },
+            tipPosition,
+            bubbleAnimStyle,
+          ]}>
+
+          <View style={styles.tipDots}>
+            {ITINERARY_TIPS.map((_, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.tipDot,
+                  {
+                    backgroundColor: i === displayedTipIndex ? colors.primary : colors.border,
+                    width: i === displayedTipIndex ? 18 : 6,
+                  },
+                ]}
+              />
+            ))}
+          </View>
+
+          <View style={{ gap: 6 }}>
+            <ThemedText style={[styles.tipLabel, { color: colors.primary }]}>TIP</ThemedText>
+            <ThemedText style={[styles.tipText, { color: colors.text }]}>
+              {displayedTip?.text}
+            </ThemedText>
+          </View>
+
+          <View style={styles.tipActions}>
+            <View />
+            {displayedTipIndex >= 2 && displayedTipIndex < ITINERARY_TIPS.length - 1 ? (
+              <Pressable
+                style={[styles.tipPillButton, { backgroundColor: colors.primary }]}
+                onPress={() => {
+                  const next = displayedTipIndex + 1;
+                  if (ITINERARY_TIPS[next]?.target === 'center') setEventModalVisible(false);
+                  setItineraryTipIndex(next);
+                }}>
+                <ThemedText style={styles.tipPillButtonText}>Next →</ThemedText>
+              </Pressable>
+            ) : displayedTipIndex === ITINERARY_TIPS.length - 1 ? (
+              <Pressable
+                style={[styles.tipPillButton, { backgroundColor: colors.primary }]}
+                onPress={() => {
+                  setShowItineraryTips(false);
+                  setItineraryTipIndex(0);
+                }}>
+                <ThemedText style={styles.tipPillButtonText}>Got it ✓</ThemedText>
+              </Pressable>
+            ) : null}
+          </View>
+
+          {ITINERARY_TIPS[displayedTipIndex]?.target !== 'center' && (
+            arrowDirection === 'up'
+              ? <View style={[styles.tipArrowUp, { borderBottomColor: colors.surface, left: arrowLeft }]} />
+              : <View style={[styles.tipArrowDown, { borderTopColor: colors.surface, left: arrowLeft }]} />
+          )}
+        </RNAnimated.View>
+      </View>
+    );
+  };
+
   return (
     <ThemedView style={styles.container}>
       <ScrollView
         style={{ flex: 1 }}
         scrollEventThrottle={16}
-        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: false })}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], {
+          useNativeDriver: false,
+          listener: () => {
+            if (showItineraryTips) setShowItineraryTips(false);
+            if (showOverviewTips) setShowOverviewTips(false);
+          },
+        })}
         bounces
         alwaysBounceVertical
         overScrollMode="always"
@@ -4306,6 +4748,19 @@ export default function TripDetailsScreen() {
           styles.bottomNavOverlay,
           { bottom: 24 },
         ]}>
+        {activeTab === 'overview' ? (
+          <View ref={overviewHelpButtonRef} collapsable={false}>
+            <Pressable
+              style={[styles.bottomNavButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              onPress={() => {
+                setShowOverviewTips(true);
+                setOverviewTipIndex(0);
+              }}>
+              <IconSymbol name="questionmark.circle" size={22} color={colors.primary} />
+            </Pressable>
+          </View>
+        ) : null}
+
         {activeTab === 'itinerary' ? (
           <View ref={helpButtonRef} collapsable={false} style={{ alignItems: 'center', justifyContent: 'center' }}>
             {/* Pulse ring */}
@@ -4350,128 +4805,9 @@ export default function TripDetailsScreen() {
         </Pressable>
       </View>
 
-      {(() => {
-        if (!tipAnchor) return null;
-        const tip = ITINERARY_TIPS[itineraryTipIndex];
-        const screenH = Dimensions.get('window').height;
-        const screenW = Dimensions.get('window').width;
-        const bubbleMargin = 24;
-
-        let bubblePosition: { top?: number; bottom?: number };
-        let arrowLeft: number;
-
-        if (tip?.target === 'dayCards') {
-          bubblePosition = { top: Math.max(tipAnchor.y - 14, 80) };
-          arrowLeft = screenW / 2 - bubbleMargin - 10;
-        } else {
-          bubblePosition = { bottom: screenH - tipAnchor.y + 14 };
-          arrowLeft = tipAnchor.x + tipAnchor.w / 2 - bubbleMargin - 10;
-        }
-
-        const advanceTip = () => {
-          if (itineraryTipIndex < ITINERARY_TIPS.length - 1) {
-            setItineraryTipIndex((i) => i + 1);
-          } else {
-            setShowItineraryTips(false);
-            setItineraryTipIndex(0);
-          }
-        };
-        const DARK = 'rgba(0,0,0,0.62)';
-
-        return (
-          <View style={[StyleSheet.absoluteFill, { zIndex: 9999 }]} pointerEvents="box-none">
-            {/* Morphing circular spotlight: 4 rects + 4 corners, all driven by animated values */}
-            <Animated.View style={[StyleSheet.absoluteFill, { opacity: tipBackdropOpacity }]} pointerEvents="none">
-              {/* Top */}
-              <Animated.View style={{ position: 'absolute', left: 0, right: 0, top: 0, height: spotCyMinusR, backgroundColor: DARK }} />
-              {/* Left */}
-              <Animated.View style={{ position: 'absolute', left: 0, width: spotCxMinusR, top: spotCyMinusR, height: spotDiameter, backgroundColor: DARK }} />
-              {/* Right */}
-              <Animated.View style={{ position: 'absolute', left: spotCxPlusR, width: 2000, top: spotCyMinusR, height: spotDiameter, backgroundColor: DARK }} />
-              {/* Bottom */}
-              <Animated.View style={{ position: 'absolute', left: 0, right: 0, top: spotCyPlusR, height: 2000, backgroundColor: DARK }} />
-              {/* Corner TL */}
-              <Animated.View style={{ position: 'absolute', left: spotCxMinusR, top: spotCyMinusR, width: spotRAnim, height: spotRAnim, backgroundColor: DARK, borderBottomRightRadius: spotRAnim }} />
-              {/* Corner TR */}
-              <Animated.View style={{ position: 'absolute', left: spotCx, top: spotCyMinusR, width: spotRAnim, height: spotRAnim, backgroundColor: DARK, borderBottomLeftRadius: spotRAnim }} />
-              {/* Corner BL */}
-              <Animated.View style={{ position: 'absolute', left: spotCxMinusR, top: spotCy, width: spotRAnim, height: spotRAnim, backgroundColor: DARK, borderTopRightRadius: spotRAnim }} />
-              {/* Corner BR */}
-              <Animated.View style={{ position: 'absolute', left: spotCx, top: spotCy, width: spotRAnim, height: spotRAnim, backgroundColor: DARK, borderTopLeftRadius: spotRAnim }} />
-              {/* Purple ring */}
-              <Animated.View style={{ position: 'absolute', left: spotCxMinusR, top: spotCyMinusR, width: spotDiameter, height: spotDiameter, borderRadius: spotRAnim, borderWidth: 2.5, borderColor: colors.primary }} />
-            </Animated.View>
-            {/* Tap anywhere to advance */}
-            <Pressable style={StyleSheet.absoluteFill} onPress={advanceTip} />
-
-            {/* Animated bubble */}
-            <Animated.View
-              pointerEvents={showItineraryTips ? 'box-none' : 'none'}
-              style={[
-                styles.tipBubblePositioned,
-                { backgroundColor: colors.surface },
-                bubblePosition,
-                { opacity: tipBubbleOpacity, transform: [{ scale: tipBubbleScale }] },
-              ]}>
-
-              {/* Dot indicators */}
-              <View style={styles.tipDots}>
-                {ITINERARY_TIPS.map((_, i) => (
-                  <View
-                    key={i}
-                    style={[
-                      styles.tipDot,
-                      {
-                        backgroundColor: i === itineraryTipIndex ? colors.primary : colors.border,
-                        width: i === itineraryTipIndex ? 18 : 6,
-                      },
-                    ]}
-                  />
-                ))}
-              </View>
-
-              {/* Tip content with crossfade */}
-              <Animated.View style={{ opacity: tipContentOpacity, gap: 6 }}>
-                <ThemedText style={[styles.tipLabel, { color: colors.primary }]}>TIP</ThemedText>
-                <ThemedText style={[styles.tipText, { color: colors.text }]}>
-                  {tip?.text}
-                </ThemedText>
-              </Animated.View>
-
-              {/* Actions */}
-              <View style={styles.tipActions}>
-                {itineraryTipIndex > 0 ? (
-                  <Pressable
-                    hitSlop={8}
-                    onPress={() => setItineraryTipIndex((i) => i - 1)}>
-                    <ThemedText style={[styles.tipBackText, { color: colors.icon }]}>← Back</ThemedText>
-                  </Pressable>
-                ) : (
-                  <View />
-                )}
-                {itineraryTipIndex < ITINERARY_TIPS.length - 1 ? (
-                  <Pressable
-                    style={[styles.tipPillButton, { backgroundColor: colors.primary }]}
-                    onPress={() => setItineraryTipIndex((i) => i + 1)}>
-                    <ThemedText style={styles.tipPillButtonText}>Next →</ThemedText>
-                  </Pressable>
-                ) : (
-                  <Pressable
-                    style={[styles.tipPillButton, { backgroundColor: colors.primary }]}
-                    onPress={() => {
-                      setShowItineraryTips(false);
-                      setItineraryTipIndex(0);
-                    }}>
-                    <ThemedText style={styles.tipPillButtonText}>Got it ✓</ThemedText>
-                  </Pressable>
-                )}
-              </View>
-
-              <View style={[styles.tipArrowDown, { left: arrowLeft, borderTopColor: colors.surface }]} />
-            </Animated.View>
-          </View>
-        );
-      })()}
+      {/* Tips that anchor to elements outside the modal render here. */}
+      {!isModalTip(ITINERARY_TIPS[displayedTipIndex]?.target) && renderTipBubble()}
+      {renderOverviewTipBubble()}
 
     </ThemedView>
   );
@@ -5212,7 +5548,7 @@ const styles = StyleSheet.create({
   },
   journalHeaderRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 12,
   },
@@ -5252,6 +5588,22 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     textAlign: 'right',
     marginTop: 2,
+  },
+  settleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+  },
+  settleCheckbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    marginRight: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   emptyText: {
     fontSize: 13,
@@ -5510,8 +5862,10 @@ const styles = StyleSheet.create({
     left: 20,
     right: 20,
     borderRadius: 22,
-    padding: 22,
-    gap: 16,
+    paddingTop: 22,
+    paddingHorizontal: 22,
+    paddingBottom: 14,
+    gap: 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 12 },
     shadowOpacity: 0.28,

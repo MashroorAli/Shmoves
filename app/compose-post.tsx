@@ -3,6 +3,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   FlatList,
@@ -37,6 +38,7 @@ interface PickerTrip {
 
 interface LocalPhoto {
   uri: string;
+  alreadyUploaded?: boolean;
 }
 
 export default function ComposePostScreen() {
@@ -81,8 +83,10 @@ export default function ComposePostScreen() {
   const [body, setBody] = useState('');
   const [photos, setPhotos] = useState<LocalPhoto[]>([]);
   const [busy, setBusy] = useState(false);
+  const [tripPhotoPickerOpen, setTripPhotoPickerOpen] = useState(false);
+  const [tripSelection, setTripSelection] = useState<Set<string>>(new Set());
 
-  const pickPhotos = async () => {
+  const pickFromLibrary = async () => {
     const slots = 5 - photos.length;
     if (slots <= 0) return;
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -98,6 +102,30 @@ export default function ComposePostScreen() {
     });
     if (result.canceled) return;
     setPhotos((prev) => [...prev, ...result.assets.slice(0, slots).map((a) => ({ uri: a.uri }))]);
+  };
+
+  const tripPhotos = selected?.source === 'shared'
+    ? (sharedTrips.find((st) => st.id === selected.id)?.photos ?? [])
+    : [];
+
+  const handleAddPhoto = () => {
+    const slots = 5 - photos.length;
+    if (slots <= 0) return;
+    ActionSheetIOS.showActionSheetWithOptions(
+      { options: ['Photo Library', 'Trip Photos', 'Cancel'], cancelButtonIndex: 2 },
+      (index) => {
+        if (index === 0) {
+          pickFromLibrary();
+        } else if (index === 1) {
+          if (tripPhotos.length === 0) {
+            Alert.alert('No trip photos', 'This trip has no photos uploaded yet. Add some from the Photos tab first.');
+          } else {
+            setTripSelection(new Set());
+            setTripPhotoPickerOpen(true);
+          }
+        }
+      },
+    );
   };
 
   const removePhoto = (uri: string) => setPhotos((prev) => prev.filter((p) => p.uri !== uri));
@@ -141,8 +169,12 @@ export default function ComposePostScreen() {
     try {
       const uploaded: string[] = [];
       for (const p of photos) {
-        const url = await uploadPhotoToCloudinary(p.uri);
-        uploaded.push(url);
+        if (p.alreadyUploaded) {
+          uploaded.push(p.uri);
+        } else {
+          const url = await uploadPhotoToCloudinary(p.uri);
+          uploaded.push(url);
+        }
       }
       await createTripPost({
         authorId: uid,
@@ -224,7 +256,7 @@ export default function ComposePostScreen() {
             ))}
             {photos.length < 5 ? (
               <Pressable
-                onPress={pickPhotos}
+                onPress={handleAddPhoto}
                 style={[styles.photoAdd, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
               >
                 <Ionicons name="add" size={28} color={colors.primary} />
@@ -238,6 +270,66 @@ export default function ComposePostScreen() {
           </ThemedText>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal visible={tripPhotoPickerOpen} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setTripPhotoPickerOpen(false)}>
+        <View style={[styles.modalRoot, { backgroundColor: colors.background, paddingTop: insets.top + 8 }]}>
+          <View style={styles.header}>
+            <Pressable onPress={() => setTripPhotoPickerOpen(false)} hitSlop={10}>
+              <ThemedText style={[styles.cancelText, { color: colors.icon }]}>Cancel</ThemedText>
+            </Pressable>
+            <ThemedText style={[styles.headerTitle, { color: colors.text }]}>
+              Trip Photos{tripSelection.size > 0 ? ` (${tripSelection.size})` : ''}
+            </ThemedText>
+            <Pressable
+              hitSlop={10}
+              disabled={tripSelection.size === 0}
+              style={[styles.postBtn, { backgroundColor: colors.primary, opacity: tripSelection.size === 0 ? 0.4 : 1 }]}
+              onPress={() => {
+                const slots = 5 - photos.length;
+                const toAdd = tripPhotos
+                  .filter((p) => tripSelection.has(p.id) && !photos.some((ph) => ph.uri === p.path))
+                  .slice(0, slots)
+                  .map((p) => ({ uri: p.path, alreadyUploaded: true as const }));
+                setPhotos((prev) => [...prev, ...toAdd]);
+                setTripPhotoPickerOpen(false);
+              }}>
+              <ThemedText style={styles.postBtnText}>Add</ThemedText>
+            </Pressable>
+          </View>
+          <FlatList
+            data={tripPhotos}
+            numColumns={3}
+            keyExtractor={(p) => p.id}
+            contentContainerStyle={{ padding: 2 }}
+            renderItem={({ item }) => {
+              const alreadyAdded = photos.some((p) => p.uri === item.path);
+              const selected = tripSelection.has(item.id);
+              const slots = 5 - photos.length;
+              const atLimit = tripSelection.size >= slots && !selected;
+              return (
+                <Pressable
+                  style={{ flex: 1/3, aspectRatio: 1, padding: 2, opacity: alreadyAdded || atLimit ? 0.4 : 1 }}
+                  onPress={() => {
+                    if (alreadyAdded || atLimit) return;
+                    setTripSelection((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(item.id)) next.delete(item.id);
+                      else next.add(item.id);
+                      return next;
+                    });
+                  }}>
+                  <Image source={{ uri: item.path }} style={{ flex: 1, borderRadius: 4 }} resizeMode="cover" />
+                  {selected && (
+                    <View style={styles.tripPhotoCheck}>
+                      <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                    </View>
+                  )}
+                </Pressable>
+              );
+            }}
+          />
+        </View>
+      </Modal>
 
       <TripPickerModal
         visible={pickerOpen}
@@ -408,6 +500,7 @@ const styles = StyleSheet.create({
   photoAddText: { fontSize: 11, marginTop: 2, fontWeight: '600' },
   helperText: { fontSize: 12, marginTop: 4, lineHeight: 18 },
 
+  tripPhotoCheck: { position: 'absolute', bottom: 6, right: 6 },
   modalRoot: { flex: 1 },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 8 },
   emptyTitle: { fontSize: 16, fontWeight: '700' },

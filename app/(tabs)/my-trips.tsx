@@ -190,13 +190,8 @@ export default function MyTripsScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <ThemedView style={styles.header}>
-        <View style={styles.headerRow}>
-          <ThemedText type="title">My Shmoves</ThemedText>
-        </View>
-      </ThemedView>
-
-      <ScrollView style={{ flex: 1, marginTop: 30 }} contentContainerStyle={{ gap: 16, paddingBottom: 40 }}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ gap: 16, paddingBottom: 40, paddingTop: 60 }}>
+        <ThemedText type="title" style={{ marginBottom: 8 }}>My Shmoves</ThemedText>
         {/* Current Trip */}
         {currentTrips.length > 0 && (
           <>
@@ -282,14 +277,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     padding: 24,
-  },
-  header: {
-    marginTop: 40,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
   },
   signOutText: {
     color: '#007AFF',

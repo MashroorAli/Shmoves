@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
-import { Alert, Dimensions, FlatList, Image, Pressable, StyleSheet, View } from 'react-native';
+import { ActionSheetIOS, Alert, Dimensions, FlatList, Image, Modal, Pressable, StatusBar, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { deleteTripPost, FeedPost, setLike } from '@/config/posts-api';
@@ -21,6 +21,7 @@ export function PostCard({ post, onChanged, onOpenComments, hideTapForDetails }:
   const colors = useColors();
   const { uid } = useAuth();
   const [busyLike, setBusyLike] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   const mine = uid === post.authorId;
   const initials = (post.author.name ?? post.author.username ?? '?').trim()[0]?.toUpperCase() ?? '?';
@@ -78,7 +79,7 @@ export function PostCard({ post, onChanged, onOpenComments, hideTapForDetails }:
             <ThemedText style={[styles.avatarInitial, { color: colors.text }]}>{initials}</ThemedText>
           </View>
         )}
-        <Pressable onPress={openTrip} style={{ flex: 1, minWidth: 0 }}>
+        <Pressable onPress={() => onOpenComments(post)} style={{ flex: 1, minWidth: 0 }}>
           <ThemedText style={[styles.name, { color: colors.text }]} numberOfLines={1}>
             {post.author.name ?? post.author.username ?? 'Unknown'}
           </ThemedText>
@@ -87,14 +88,22 @@ export function PostCard({ post, onChanged, onOpenComments, hideTapForDetails }:
           </ThemedText>
         </Pressable>
         {mine ? (
-          <Pressable onPress={confirmDelete} hitSlop={8} style={styles.moreBtn}>
-            <Ionicons name="trash-outline" size={18} color={colors.icon} />
+          <Pressable
+            hitSlop={8}
+            style={styles.moreBtn}
+            onPress={() =>
+              ActionSheetIOS.showActionSheetWithOptions(
+                { options: ['Delete Post', 'Cancel'], destructiveButtonIndex: 0, cancelButtonIndex: 1 },
+                (index) => { if (index === 0) confirmDelete(); },
+              )
+            }>
+            <Ionicons name="ellipsis-horizontal" size={20} color={colors.icon} />
           </Pressable>
         ) : null}
       </View>
 
       {post.body ? (
-        <Pressable onPress={openTrip}>
+        <Pressable onPress={() => onOpenComments(post)}>
           <ThemedText style={[styles.body, { color: colors.text }]} numberOfLines={hideTapForDetails ? undefined : 6}>
             {post.body}
           </ThemedText>
@@ -102,8 +111,30 @@ export function PostCard({ post, onChanged, onOpenComments, hideTapForDetails }:
       ) : null}
 
       {post.photos.length ? (
-        <PhotoStrip photos={post.photos} onPress={openTrip} />
+        <PhotoStrip photos={post.photos} onPhotoPress={(i) => setLightboxIndex(i)} />
       ) : null}
+
+      <Modal visible={lightboxIndex !== null} transparent animationType="fade" statusBarTranslucent>
+        <StatusBar hidden />
+        <Pressable
+          style={styles.lightboxBackdrop}
+          onPress={() => setLightboxIndex(null)}>
+          <FlatList
+            data={post.photos}
+            horizontal
+            pagingEnabled
+            initialScrollIndex={lightboxIndex ?? 0}
+            getItemLayout={(_, index) => ({ length: SCREEN_W, offset: SCREEN_W * index, index })}
+            keyExtractor={(uri, i) => `${uri}-${i}`}
+            showsHorizontalScrollIndicator={false}
+            renderItem={({ item }) => (
+              <Pressable style={styles.lightboxPage} onPress={() => setLightboxIndex(null)}>
+                <Image source={{ uri: item }} style={styles.lightboxImage} resizeMode="contain" />
+              </Pressable>
+            )}
+          />
+        </Pressable>
+      </Modal>
 
       <View style={[styles.actionsRow, { borderTopColor: colors.border }]}>
         <Pressable onPress={toggleLike} style={styles.actionBtn} disabled={busyLike}>
@@ -127,10 +158,10 @@ export function PostCard({ post, onChanged, onOpenComments, hideTapForDetails }:
   );
 }
 
-function PhotoStrip({ photos, onPress }: { photos: string[]; onPress: () => void }) {
+function PhotoStrip({ photos, onPhotoPress }: { photos: string[]; onPhotoPress: (index: number) => void }) {
   if (photos.length === 1) {
     return (
-      <Pressable onPress={onPress} style={styles.singlePhotoWrap}>
+      <Pressable onPress={() => onPhotoPress(0)} style={styles.singlePhotoWrap}>
         <Image source={{ uri: photos[0] }} style={styles.singlePhoto} resizeMode="cover" />
       </Pressable>
     );
@@ -141,8 +172,8 @@ function PhotoStrip({ photos, onPress }: { photos: string[]; onPress: () => void
       horizontal
       showsHorizontalScrollIndicator={false}
       keyExtractor={(u, i) => `${u}-${i}`}
-      renderItem={({ item }) => (
-        <Pressable onPress={onPress}>
+      renderItem={({ item, index }) => (
+        <Pressable onPress={() => onPhotoPress(index)}>
           <Image source={{ uri: item }} style={styles.multiPhoto} resizeMode="cover" />
         </Pressable>
       )}
@@ -182,6 +213,10 @@ const styles = StyleSheet.create({
   moreBtn: { padding: 6 },
 
   body: { fontSize: 14, lineHeight: 20, fontWeight: '500' },
+
+  lightboxBackdrop: { flex: 1, backgroundColor: '#000' },
+  lightboxPage: { width: SCREEN_W, flex: 1, alignItems: 'center', justifyContent: 'center' },
+  lightboxImage: { width: SCREEN_W, height: SCREEN_W * 1.2 },
 
   singlePhotoWrap: { borderRadius: 12, overflow: 'hidden' },
   singlePhoto: { width: '100%', height: PHOTO_H },
