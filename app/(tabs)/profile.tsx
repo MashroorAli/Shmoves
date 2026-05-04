@@ -27,6 +27,7 @@ import { useAccent } from '@/context/accent-context';
 import { useAuth } from '@/context/auth-context';
 import { useHomeCurrency } from '@/context/home-currency-context';
 import { useTempUnit } from '@/context/temp-unit-context';
+import { useTimeFormat } from '@/context/time-format-context';
 import { supabase } from '@/config/supabase';
 import { useColors } from '@/hooks/use-colors';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -37,6 +38,7 @@ export default function ProfileScreen() {
   const scheme = useColorScheme() ?? 'light';
   const { accentKey, setAccent } = useAccent();
   const { tempUnit, setTempUnit } = useTempUnit();
+  const { timeFormat, setTimeFormat } = useTimeFormat();
   const { homeCurrency, setHomeCurrency } = useHomeCurrency();
   const [currencyPickerVisible, setCurrencyPickerVisible] = useState(false);
   const [currencySearch, setCurrencySearch] = useState('');
@@ -379,6 +381,29 @@ export default function ProfileScreen() {
               tempUnit === unit && { color: '#fff' },
             ]}>
               °{unit}
+            </ThemedText>
+          </Pressable>
+        ))}
+      </View>
+
+      <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+      {/* Time Format */}
+      <ThemedText style={[styles.label, { color: colors.icon }]}>Time Format</ThemedText>
+      <View style={[styles.tempToggleRow, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        {(['12h', '24h'] as const).map((fmt) => (
+          <Pressable
+            key={fmt}
+            onPress={() => setTimeFormat(fmt)}
+            style={[
+              styles.tempToggleOption,
+              timeFormat === fmt && { backgroundColor: colors.primary },
+            ]}>
+            <ThemedText style={[
+              styles.tempToggleText,
+              timeFormat === fmt && { color: '#fff' },
+            ]}>
+              {fmt === '12h' ? '12h' : '24h'}
             </ThemedText>
           </Pressable>
         ))}

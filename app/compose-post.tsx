@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -22,6 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { createTripPost, uploadPhotoToCloudinary } from '@/config/posts-api';
+import { supabase } from '@/config/supabase';
 import { useAuth } from '@/context/auth-context';
 import { useSharedTrips } from '@/context/shared-trips-context';
 import { useTrips } from '@/context/trips-context';
@@ -85,6 +86,18 @@ export default function ComposePostScreen() {
   const [busy, setBusy] = useState(false);
   const [tripPhotoPickerOpen, setTripPhotoPickerOpen] = useState(false);
   const [tripSelection, setTripSelection] = useState<Set<string>>(new Set());
+  const [postedTripIds, setPostedTripIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!uid) return;
+    supabase
+      .from('trip_posts')
+      .select('trip_id')
+      .eq('author_id', uid)
+      .then(({ data }) => {
+        if (data) setPostedTripIds(new Set(data.map((r: any) => r.trip_id)));
+      });
+  }, [uid]);
 
   const pickFromLibrary = async () => {
     const slots = 5 - photos.length;
@@ -214,7 +227,7 @@ export default function ComposePostScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.flex}
       >
-        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <Pressable
             onPress={() => setPickerOpen(true)}
             style={[styles.pickerRow, { borderColor: colors.border, backgroundColor: colors.surface }]}
@@ -335,6 +348,7 @@ export default function ComposePostScreen() {
         visible={pickerOpen}
         trips={ownTrips}
         selectedId={selected?.id ?? null}
+        postedTripIds={postedTripIds}
         onSelect={(t) => {
           setSelected(t);
           setPickerOpen(false);
@@ -349,12 +363,14 @@ function TripPickerModal({
   visible,
   trips,
   selectedId,
+  postedTripIds,
   onSelect,
   onClose,
 }: {
   visible: boolean;
   trips: PickerTrip[];
   selectedId: string | null;
+  postedTripIds: Set<string>;
   onSelect: (t: PickerTrip) => void;
   onClose: () => void;
 }) {
@@ -400,11 +416,29 @@ function TripPickerModal({
                     <ThemedText style={[styles.tripTitle, { color: colors.text }]}>{item.destination}</ThemedText>
                     <ThemedText style={[styles.tripSub, { color: colors.icon }]}>
                       {formatRange(item.startDate, item.endDate)}
-                      {item.source === 'shared' ? ' · Shared' : ''}
-                      {!item.isPublic ? ' · Private' : ''}
                     </ThemedText>
                   </View>
-                  {selected ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
+                  <View style={styles.tripRowRight}>
+                    {postedTripIds.has(item.id) && (
+                      <View style={[styles.privacyBadge, { backgroundColor: '#FEF3C7', borderColor: '#FCD34D' }]}>
+                        <ThemedText style={[styles.privacyBadgeText, { color: '#92400E' }]}>Posted</ThemedText>
+                      </View>
+                    )}
+                    <View style={[
+                      styles.privacyBadge,
+                      item.isPublic
+                        ? { backgroundColor: '#D1FAE5', borderColor: '#6EE7B7' }
+                        : { backgroundColor: '#EDE9FE', borderColor: '#C4B5FD' },
+                    ]}>
+                      <ThemedText style={[
+                        styles.privacyBadgeText,
+                        { color: item.isPublic ? '#065F46' : '#5B21B6' },
+                      ]}>
+                        {item.isPublic ? 'Public' : 'Private'}
+                      </ThemedText>
+                    </View>
+                    {selected ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
+                  </View>
                 </Pressable>
               );
             }}
@@ -514,4 +548,12 @@ const styles = StyleSheet.create({
   },
   tripTitle: { fontSize: 15, fontWeight: '700' },
   tripSub: { fontSize: 12, fontWeight: '500', marginTop: 2 },
+  tripRowRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  privacyBadge: {
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  privacyBadgeText: { fontSize: 11, fontWeight: '700' },
 });

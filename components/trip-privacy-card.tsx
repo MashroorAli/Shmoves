@@ -42,8 +42,8 @@ export function TripPrivacyCard({ tripId, source, isPublic, canEdit }: Props) {
     Alert.alert(
       'Trip privacy',
       isPublic
-        ? 'Friends can see a summary of this trip (destination, dates, photos, and your posts). They cannot see your flights, expenses, or housing.'
-        : 'Only you can see this trip. Switch it to public to share posts about it with friends on Shmovements.',
+        ? 'This trip is public. When you create a post, your friends will see the destination, your travel dates, and any photos you choose to share. Everything else — flights, expenses, and housing — stays private.'
+        : 'This trip is private. You won\'t get the option to share posts about it on Shmovements. Switch it to public whenever you\'re ready.',
     );
   };
 
@@ -67,8 +67,8 @@ export function TripPrivacyCard({ tripId, source, isPublic, canEdit }: Props) {
         </View>
         <ThemedText style={[styles.subtitle, { color: colors.icon }]}>
           {isPublic
-            ? 'Friends see a summary and any posts you share.'
-            : 'Only you can see this trip right now.'}
+            ? 'You can share posts about this trip on Shmovements.'
+            : 'Posting on Shmovements is disabled for this trip.'}
         </ThemedText>
       </View>
       <Switch

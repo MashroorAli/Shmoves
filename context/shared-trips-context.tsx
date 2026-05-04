@@ -6,10 +6,34 @@ import type {
   ItineraryDay,
   ItineraryEvent,
   JournalEntry,
+  TicketAttachment,
   Trip,
   TripExpense,
   TripHousing,
 } from '@/context/trips-context';
+
+function syncItineraryToRange(existing: ItineraryDay[], startDate: string, endDate: string): ItineraryDay[] {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return existing;
+
+  const msPerDay = 86400000;
+  const totalDays = Math.round((end.getTime() - start.getTime()) / msPerDay) + 1;
+  const allDates: string[] = Array.from({ length: totalDays }, (_, i) =>
+    new Date(start.getTime() + i * msPerDay).toISOString().slice(0, 10),
+  );
+
+  const existingByDate = new Map(existing.map((d) => [d.date, d]));
+
+  return allDates.map((date, i) =>
+    existingByDate.get(date) ?? {
+      id: `day-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${i}`,
+      label: `Day ${i + 1}`,
+      date,
+      events: [],
+    },
+  );
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -52,6 +76,13 @@ export interface PhotoEntry {
   favoritedBy?: string[]; // userIds who favorited
 }
 
+export interface Settlement {
+  from: string;      // debtor user ID
+  to: string;        // creditor user ID
+  settledAt: string; // ISO timestamp
+  settledBy: string; // who marked it
+}
+
 export interface SharedTripData {
   id: string; // shared_trips UUID
   trip: Trip;
@@ -65,6 +96,7 @@ export interface SharedTripData {
   members: TripMember[];
   ownerId: string;
   isPublic: boolean;
+  settlements: Settlement[];
 }
 
 interface SharedTripsContextValue {
@@ -98,14 +130,15 @@ interface SharedTripsContextValue {
   clearSharedFlights: (sharedTripId: string) => Promise<void>;
 
   addSharedItineraryDay: (sharedTripId: string, label: string, date: string) => Promise<ItineraryDay>;
-  addSharedItineraryEvent: (sharedTripId: string, dayId: string, name: string, time: string, location?: string) => Promise<ItineraryEvent>;
+  addSharedItineraryEvent: (sharedTripId: string, dayId: string, name: string, time: string, location?: string, notes?: string, tickets?: TicketAttachment[], endTime?: string) => Promise<ItineraryEvent>;
   updateSharedItineraryDay: (sharedTripId: string, dayId: string, label: string) => Promise<void>;
   deleteSharedItineraryDay: (sharedTripId: string, dayId: string) => Promise<void>;
-  updateSharedItineraryEvent: (sharedTripId: string, dayId: string, eventId: string, updates: { name: string; time: string; location?: string }) => Promise<void>;
+  bulkSetSharedItineraryDays: (sharedTripId: string, days: ItineraryDay[]) => Promise<void>;
+  updateSharedItineraryEvent: (sharedTripId: string, dayId: string, eventId: string, updates: { name: string; time: string; location?: string; notes?: string; tickets?: TicketAttachment[]; endTime?: string }) => Promise<void>;
   deleteSharedItineraryEvent: (sharedTripId: string, dayId: string, eventId: string) => Promise<void>;
 
-  addSharedExpense: (sharedTripId: string, expense: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }) => Promise<TripExpense>;
-  updateSharedExpense: (sharedTripId: string, expenseId: string, updates: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }) => Promise<void>;
+  addSharedExpense: (sharedTripId: string, expense: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[]; paidBy?: string }) => Promise<TripExpense>;
+  updateSharedExpense: (sharedTripId: string, expenseId: string, updates: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[]; paidBy?: string }) => Promise<void>;
   deleteSharedExpense: (sharedTripId: string, expenseId: string) => Promise<void>;
 
   addSharedJournalEntry: (sharedTripId: string, entry: { date: string; text: string; isShared?: boolean; authorId?: string }) => Promise<JournalEntry>;
@@ -120,6 +153,10 @@ interface SharedTripsContextValue {
   toggleFavoritePhoto: (sharedTripId: string, photoId: string) => Promise<void>;
 
   setSharedTripPublic: (sharedTripId: string, isPublic: boolean) => Promise<void>;
+  updateSharedTripDetails: (sharedTripId: string, updates: { destination: string; startDate: string; endDate: string }) => Promise<void>;
+
+  markSettled: (sharedTripId: string, from: string, to: string) => Promise<void>;
+  unmarkSettled: (sharedTripId: string, from: string, to: string) => Promise<void>;
 }
 
 const SharedTripsContext = createContext<SharedTripsContextValue | undefined>(undefined);
@@ -249,6 +286,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
               members: tripMembers,
               ownerId: row.owner_id,
               isPublic: row.is_public ?? true,
+              settlements: (row.settlements as Settlement[]) ?? [],
             };
           });
         }
@@ -551,9 +589,9 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       return created;
     };
 
-    const addSharedItineraryEvent = async (sharedTripId: string, dayId: string, name: string, time: string, location?: string): Promise<ItineraryEvent> => {
+    const addSharedItineraryEvent = async (sharedTripId: string, dayId: string, name: string, time: string, location?: string, notes?: string, tickets?: TicketAttachment[], endTime?: string): Promise<ItineraryEvent> => {
       const current = await readColumn<ItineraryDay[]>(sharedTripId, 'itinerary');
-      const created: ItineraryEvent = { id: `event-${Date.now()}`, name, time, location };
+      const created: ItineraryEvent = { id: `event-${Date.now()}`, name, time, location, notes, tickets, endTime };
       const next = current.map((d) => (d.id === dayId ? { ...d, events: [...d.events, created] } : d));
       await writeColumn(sharedTripId, 'itinerary', next);
       updateLocalTrip(sharedTripId, (t) => ({ ...t, itinerary: next }));
@@ -575,7 +613,12 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       updateLocalTrip(sharedTripId, (t) => ({ ...t, itinerary: next }));
     };
 
-    const updateSharedItineraryEvent = async (sharedTripId: string, dayId: string, eventId: string, updates: { name: string; time: string; location?: string }) => {
+    const bulkSetSharedItineraryDays = async (sharedTripId: string, days: ItineraryDay[]) => {
+      await writeColumn(sharedTripId, 'itinerary', days);
+      updateLocalTrip(sharedTripId, (t) => ({ ...t, itinerary: days }));
+    };
+
+    const updateSharedItineraryEvent = async (sharedTripId: string, dayId: string, eventId: string, updates: { name: string; time: string; location?: string; notes?: string; tickets?: TicketAttachment[]; endTime?: string }) => {
       const current = await readColumn<ItineraryDay[]>(sharedTripId, 'itinerary');
       const next = current.map((d) => {
         if (d.id !== dayId) return d;
@@ -596,7 +639,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
     };
 
     // ── Expenses CRUD ───────────────────────────────────────────────────
-    const addSharedExpense = async (sharedTripId: string, expense: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }): Promise<TripExpense> => {
+    const addSharedExpense = async (sharedTripId: string, expense: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[]; paidBy?: string }): Promise<TripExpense> => {
       const created: TripExpense = {
         id: `expense-${Date.now()}`,
         name: expense.name.trim(),
@@ -606,6 +649,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
         splitType: expense.splitType,
         splitWith: expense.splitWith,
         createdBy: userId!,
+        paidBy: expense.paidBy ?? userId!,
         createdAt: new Date().toISOString(),
       };
       const current = await readColumn<TripExpense[]>(sharedTripId, 'expenses');
@@ -616,7 +660,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       return created;
     };
 
-    const updateSharedExpense = async (sharedTripId: string, expenseId: string, updates: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }) => {
+    const updateSharedExpense = async (sharedTripId: string, expenseId: string, updates: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[]; paidBy?: string }) => {
       const current = await readColumn<TripExpense[]>(sharedTripId, 'expenses');
       const next = current.map((e) => (e.id === expenseId ? { ...e, ...updates, name: updates.name.trim(), currency: updates.currency.trim().toUpperCase() } : e));
       await writeColumn(sharedTripId, 'expenses', next);
@@ -725,6 +769,22 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       updateLocalTrip(sharedTripId, (t) => ({ ...t, photos: next }));
     };
 
+    const updateSharedTripDetails = async (sharedTripId: string, updates: { destination: string; startDate: string; endDate: string }) => {
+      const current = sharedTrips.find((t) => t.id === sharedTripId);
+      if (!current) return;
+      const newTrip = { ...current.trip, ...updates };
+      const syncedItinerary = syncItineraryToRange(current.itinerary, updates.startDate, updates.endDate);
+      updateLocalTrip(sharedTripId, (t) => ({ ...t, trip: newTrip, itinerary: syncedItinerary }));
+      const { error } = await supabase
+        .from('shared_trips')
+        .update({ trip: newTrip, itinerary: syncedItinerary, updated_at: new Date().toISOString() })
+        .eq('id', sharedTripId);
+      if (error) {
+        updateLocalTrip(sharedTripId, (t) => ({ ...t, trip: current.trip, itinerary: current.itinerary }));
+        throw error;
+      }
+    };
+
     const setSharedTripPublic = async (sharedTripId: string, isPublic: boolean) => {
       updateLocalTrip(sharedTripId, (t) => ({ ...t, isPublic }));
       const { error } = await supabase
@@ -735,6 +795,21 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
         updateLocalTrip(sharedTripId, (t) => ({ ...t, isPublic: !isPublic }));
         throw error;
       }
+    };
+
+    const markSettled = async (sharedTripId: string, from: string, to: string) => {
+      const current = await readColumn<Settlement[]>(sharedTripId, 'settlements');
+      if (current.some((s) => s.from === from && s.to === to)) return;
+      const next = [...current, { from, to, settledAt: new Date().toISOString(), settledBy: userId! }];
+      await writeColumn(sharedTripId, 'settlements', next);
+      updateLocalTrip(sharedTripId, (t) => ({ ...t, settlements: next }));
+    };
+
+    const unmarkSettled = async (sharedTripId: string, from: string, to: string) => {
+      const current = await readColumn<Settlement[]>(sharedTripId, 'settlements');
+      const next = current.filter((s) => !(s.from === from && s.to === to));
+      await writeColumn(sharedTripId, 'settlements', next);
+      updateLocalTrip(sharedTripId, (t) => ({ ...t, settlements: next }));
     };
 
     return {
@@ -758,6 +833,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       addSharedItineraryEvent,
       updateSharedItineraryDay,
       deleteSharedItineraryDay,
+      bulkSetSharedItineraryDays,
       updateSharedItineraryEvent,
       deleteSharedItineraryEvent,
       addSharedExpense,
@@ -772,6 +848,9 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       deleteSharedPhoto,
       toggleFavoritePhoto,
       setSharedTripPublic,
+      updateSharedTripDetails,
+      markSettled,
+      unmarkSettled,
     };
   }, [sharedTrips, pendingInvites, isLoading, refresh, userId, updateLocalTrip]);
 

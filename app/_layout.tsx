@@ -11,6 +11,7 @@ import 'react-native-reanimated';
 import { AccentProvider } from '@/context/accent-context';
 import { HomeCurrencyProvider } from '@/context/home-currency-context';
 import { TempUnitProvider } from '@/context/temp-unit-context';
+import { TimeFormatProvider } from '@/context/time-format-context';
 import { AuthProvider, useAuth } from '@/context/auth-context';
 import { SharedTripsProvider, useSharedTrips } from '@/context/shared-trips-context';
 import { SocialProvider, useSocial } from '@/context/social-context';
@@ -29,6 +30,7 @@ export default function RootLayout() {
     <AccentProvider>
     <HomeCurrencyProvider>
     <TempUnitProvider>
+    <TimeFormatProvider>
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AuthProvider>
         <RootLayoutGate>
@@ -46,6 +48,7 @@ export default function RootLayout() {
         </RootLayoutGate>
       </AuthProvider>
     </ThemeProvider>
+    </TimeFormatProvider>
     </TempUnitProvider>
     </HomeCurrencyProvider>
     </AccentProvider>

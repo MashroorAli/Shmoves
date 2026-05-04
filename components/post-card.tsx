@@ -1,10 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
-import { ActionSheetIOS, Alert, Dimensions, FlatList, Image, Modal, Pressable, StatusBar, StyleSheet, View } from 'react-native';
+import { ActionSheetIOS, ActivityIndicator, Alert, Dimensions, FlatList, Image, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StatusBar, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { deleteTripPost, FeedPost, setLike } from '@/config/posts-api';
+import { deleteTripPost, FeedPost, setLike, updateTripPost, uploadPhotoToCloudinary } from '@/config/posts-api';
 import { useAuth } from '@/context/auth-context';
 import { useColors } from '@/hooks/use-colors';
 
@@ -22,6 +23,10 @@ export function PostCard({ post, onChanged, onOpenComments, hideTapForDetails }:
   const { uid } = useAuth();
   const [busyLike, setBusyLike] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [editVisible, setEditVisible] = useState(false);
+  const [editBody, setEditBody] = useState('');
+  const [editPhotos, setEditPhotos] = useState<string[]>([]);
+  const [editBusy, setEditBusy] = useState(false);
 
   const mine = uid === post.authorId;
   const initials = (post.author.name ?? post.author.username ?? '?').trim()[0]?.toUpperCase() ?? '?';
@@ -49,6 +54,52 @@ export function PostCard({ post, onChanged, onOpenComments, hideTapForDetails }:
   const openTrip = () => {
     if (hideTapForDetails) return;
     router.push(`/trip-public/${post.tripSource}/${encodeURIComponent(post.tripId)}` as any);
+  };
+
+  const openEdit = () => {
+    setEditBody(post.body ?? '');
+    setEditPhotos([...post.photos]);
+    setEditVisible(true);
+  };
+
+  const pickEditPhoto = async () => {
+    const slots = 5 - editPhotos.length;
+    if (slots <= 0) return;
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow photo library access.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      selectionLimit: slots,
+      quality: 0.8,
+    });
+    if (result.canceled) return;
+    setEditPhotos((prev) => [...prev, ...result.assets.slice(0, slots).map((a) => a.uri)]);
+  };
+
+  const saveEdit = async () => {
+    setEditBusy(true);
+    try {
+      const uploaded: string[] = [];
+      for (const p of editPhotos) {
+        if (p.startsWith('http')) {
+          uploaded.push(p);
+        } else {
+          const url = await uploadPhotoToCloudinary(p);
+          uploaded.push(url);
+        }
+      }
+      await updateTripPost(post.id, { body: editBody.trim() || null, photos: uploaded });
+      onChanged?.({ ...post, body: editBody.trim() || null, photos: uploaded });
+      setEditVisible(false);
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Could not save changes.');
+    } finally {
+      setEditBusy(false);
+    }
   };
 
   const confirmDelete = () => {
@@ -93,8 +144,11 @@ export function PostCard({ post, onChanged, onOpenComments, hideTapForDetails }:
             style={styles.moreBtn}
             onPress={() =>
               ActionSheetIOS.showActionSheetWithOptions(
-                { options: ['Delete Post', 'Cancel'], destructiveButtonIndex: 0, cancelButtonIndex: 1 },
-                (index) => { if (index === 0) confirmDelete(); },
+                { options: ['Edit Post', 'Delete Post', 'Cancel'], destructiveButtonIndex: 1, cancelButtonIndex: 2 },
+                (index) => {
+                  if (index === 0) openEdit();
+                  if (index === 1) confirmDelete();
+                },
               )
             }>
             <Ionicons name="ellipsis-horizontal" size={20} color={colors.icon} />
@@ -134,6 +188,55 @@ export function PostCard({ post, onChanged, onOpenComments, hideTapForDetails }:
             )}
           />
         </Pressable>
+      </Modal>
+
+      <Modal visible={editVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setEditVisible(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.editRoot, { backgroundColor: colors.background }]}>
+          <View style={styles.editHeader}>
+            <Pressable onPress={() => setEditVisible(false)} hitSlop={10}>
+              <ThemedText style={[styles.editCancel, { color: colors.icon }]}>Cancel</ThemedText>
+            </Pressable>
+            <ThemedText style={[styles.editTitle, { color: colors.text }]}>Edit post</ThemedText>
+            <Pressable
+              onPress={saveEdit}
+              disabled={editBusy}
+              style={[styles.editSaveBtn, { backgroundColor: colors.primary, opacity: editBusy ? 0.6 : 1 }]}
+            >
+              {editBusy
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <ThemedText style={styles.editSaveBtnText}>Save</ThemedText>}
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={styles.editScroll} keyboardShouldPersistTaps="handled">
+            <TextInput
+              value={editBody}
+              onChangeText={setEditBody}
+              placeholder="What do you want to share?"
+              placeholderTextColor={colors.icon}
+              multiline
+              style={[styles.editBodyInput, { color: colors.inputText, borderColor: colors.border, backgroundColor: colors.surface }]}
+            />
+            <View style={styles.editPhotosWrap}>
+              {editPhotos.map((uri, i) => (
+                <View key={`${uri}-${i}`} style={styles.editPhotoItem}>
+                  <Image source={{ uri }} style={styles.editPhotoThumb} />
+                  <Pressable style={styles.editPhotoRemove} onPress={() => setEditPhotos((prev) => prev.filter((_, idx) => idx !== i))} hitSlop={6}>
+                    <Ionicons name="close-circle" size={22} color="#fff" />
+                  </Pressable>
+                </View>
+              ))}
+              {editPhotos.length < 5 && (
+                <Pressable
+                  onPress={pickEditPhoto}
+                  style={[styles.editPhotoAdd, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
+                >
+                  <Ionicons name="add" size={28} color={colors.primary} />
+                  <ThemedText style={[styles.editPhotoAddText, { color: colors.icon }]}>Add photo</ThemedText>
+                </Pressable>
+              )}
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       <View style={[styles.actionsRow, { borderTopColor: colors.border }]}>
@@ -235,4 +338,54 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   actionText: { fontSize: 13, fontWeight: '700' },
+
+  editRoot: { flex: 1 },
+  editHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 10,
+  },
+  editTitle: { fontSize: 18, fontWeight: '800' },
+  editCancel: { fontSize: 15, fontWeight: '600' },
+  editSaveBtn: {
+    minWidth: 64,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 100,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editSaveBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  editScroll: { padding: 16, gap: 12 },
+  editBodyInput: {
+    minHeight: 120,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    fontSize: 15,
+    textAlignVertical: 'top',
+  },
+  editPhotosWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  editPhotoItem: { position: 'relative' },
+  editPhotoThumb: { width: 84, height: 84, borderRadius: 12 },
+  editPhotoRemove: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: 12,
+  },
+  editPhotoAdd: {
+    width: 84,
+    height: 84,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editPhotoAddText: { fontSize: 11, marginTop: 2, fontWeight: '600' },
 });

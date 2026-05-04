@@ -46,9 +46,10 @@ import { CURRENCIES, CURRENCY_SYMBOLS, inferDestinationCurrency } from '@/consta
 import { useAuth } from '@/context/auth-context';
 import { useHomeCurrency } from '@/context/home-currency-context';
 import { type PhotoEntry, type Settlement, useSharedTrips } from '@/context/shared-trips-context';
-import { type TicketAttachment, type TripHousing, useTrips } from '@/context/trips-context';
+import { type ItineraryDay, type ItineraryEvent, type TicketAttachment, type TripHousing, useTrips } from '@/context/trips-context';
 import { useColors } from '@/hooks/use-colors';
 import { useTempUnit } from '@/context/temp-unit-context';
+import { useTimeFormat } from '@/context/time-format-context';
 import { supabase } from '@/config/supabase';
 
 type CachedHeroImages = {
@@ -140,6 +141,7 @@ export default function TripDetailsScreen() {
   const router = useRouter();
   const colors = useColors();
   const { formatTemp } = useTempUnit();
+  const { timeFormat, formatTime } = useTimeFormat();
   const { homeCurrency, convertToHome } = useHomeCurrency();
   const { uid, profileName, profileAvatarUrl } = useAuth();
   const {
@@ -153,7 +155,7 @@ export default function TripDetailsScreen() {
     addSharedItineraryDay,
     addSharedItineraryEvent,
     updateSharedItineraryDay,
-    deleteSharedItineraryDay,
+    bulkSetSharedItineraryDays,
     updateSharedItineraryEvent,
     deleteSharedItineraryEvent,
     addSharedExpense,
@@ -177,7 +179,6 @@ export default function TripDetailsScreen() {
     addItineraryDay,
     addItineraryEvent,
     updateItineraryDay,
-    deleteItineraryDay,
     updateItineraryEvent,
     deleteItineraryEvent,
     expensesByTripId,
@@ -217,8 +218,7 @@ export default function TripDetailsScreen() {
       trip?.startDate &&
       trip?.endDate &&
       itineraryDays.length === 0 &&
-      !itineraryAutoPopulated.current &&
-      !sharedTrip
+      !itineraryAutoPopulated.current
     ) {
       itineraryAutoPopulated.current = true;
       const start = new Date(trip.startDate);
@@ -227,30 +227,54 @@ export default function TripDetailsScreen() {
         const msPerDay = 86400000;
         const totalDays = Math.round((end.getTime() - start.getTime()) / msPerDay) + 1;
 
-        // Create days and track date → day mapping for flight injection
-        const dateToDay: Record<string, ReturnType<typeof addItineraryDay>> = {};
-        for (let i = 0; i < totalDays; i++) {
-          const dayDate = new Date(start.getTime() + i * msPerDay);
-          const iso = dayDate.toISOString().slice(0, 10);
-          const day = addItineraryDay(tripId, `Day ${i + 1}`, iso);
-          dateToDay[iso] = day;
-        }
+        if (sharedTrip) {
+          const days: ItineraryDay[] = Array.from({ length: totalDays }, (_, i) => {
+            const iso = new Date(start.getTime() + i * msPerDay).toISOString().slice(0, 10);
+            return { id: `day-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${i}`, label: `Day ${i + 1}`, date: iso, events: [] };
+          });
+          const dateToDay: Record<string, ItineraryDay> = Object.fromEntries(days.map((d) => [d.date, d]));
+          for (const flight of flights) {
+            if (!flight.departureDate) continue;
+            const day = dateToDay[flight.departureDate];
+            if (!day) continue;
+            const from = flight.from ?? flight.fromCity ?? '';
+            const to = flight.to ?? flight.toCity ?? '';
+            const num = flight.flightNumber ?? '';
+            const airline = flight.airline ?? '';
+            const label = [airline, num, from && to ? `${from} → ${to}` : ''].filter(Boolean).join(' · ');
+            const endTime = flight.arrivalDate === flight.departureDate ? (flight.arrivalTime ?? undefined) : undefined;
+            day.events.push({
+              id: `event-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              name: label || 'Flight',
+              time: flight.departureTime ?? '00:00',
+              endTime,
+            });
+          }
+          bulkSetSharedItineraryDays(sharedTrip.id, days);
+        } else {
+          const dateToDay: Record<string, ReturnType<typeof addItineraryDay>> = {};
+          for (let i = 0; i < totalDays; i++) {
+            const iso = new Date(start.getTime() + i * msPerDay).toISOString().slice(0, 10);
+            const day = addItineraryDay(tripId, `Day ${i + 1}`, iso);
+            dateToDay[iso] = day;
+          }
 
-        // Auto-add a flight event to the matching departure day
-        for (const flight of flights) {
-          if (!flight.departureDate) continue;
-          const day = dateToDay[flight.departureDate];
-          if (!day) continue;
-          const from = flight.from ?? flight.fromCity ?? '';
-          const to = flight.to ?? flight.toCity ?? '';
-          const num = flight.flightNumber ?? '';
-          const airline = flight.airline ?? '';
-          const label = [airline, num, from && to ? `${from} → ${to}` : ''].filter(Boolean).join(' · ');
-          addItineraryEvent(tripId, day.id, label || 'Flight', flight.departureTime ?? '00:00');
+          for (const flight of flights) {
+            if (!flight.departureDate) continue;
+            const day = dateToDay[flight.departureDate];
+            if (!day) continue;
+            const from = flight.from ?? flight.fromCity ?? '';
+            const to = flight.to ?? flight.toCity ?? '';
+            const num = flight.flightNumber ?? '';
+            const airline = flight.airline ?? '';
+            const label = [airline, num, from && to ? `${from} → ${to}` : ''].filter(Boolean).join(' · ');
+            const endTime = flight.arrivalDate === flight.departureDate ? (flight.arrivalTime ?? undefined) : undefined;
+            addItineraryEvent(tripId, day.id, label || 'Flight', flight.departureTime ?? '00:00', undefined, undefined, undefined, endTime);
+          }
         }
       }
     }
-  }, [activeTab, tripId, trip?.startDate, trip?.endDate, itineraryDays.length, addItineraryDay, addItineraryEvent, flights]);
+  }, [activeTab, tripId, trip?.startDate, trip?.endDate, itineraryDays.length, sharedTrip, addItineraryDay, addItineraryEvent, bulkSetSharedItineraryDays, flights]);
 
   const [showItineraryTips, setShowItineraryTips] = useState(false);
   const [itineraryTipIndex, setItineraryTipIndex] = useState(0);
@@ -452,6 +476,7 @@ export default function TripDetailsScreen() {
 
   const dayCardsRef = useRef<View>(null);
   const dayCardRefs = useRef<Map<string, View>>(new Map());
+  const headerScrollRef = useRef<ScrollView>(null);
 
   const findTopmostVisibleDayCard = (callback: (x: number, y: number, w: number, h: number) => void) => {
     const screenH = Dimensions.get('window').height;
@@ -504,7 +529,7 @@ export default function TripDetailsScreen() {
   const [showOverviewTips, setShowOverviewTips] = useState(false);
   const [overviewTipIndex, setOverviewTipIndex] = useState(0);
   const [displayedOverviewTipIndex, setDisplayedOverviewTipIndex] = useState(0);
-  const overviewTipsShownRef = useRef(false);
+  const overviewTipActiveRef = useRef(false);
   const overviewHelpButtonRef = useRef<View>(null);
   const overviewFlightsHeaderRef = useRef<View>(null);
   const overviewHousingHeaderRef = useRef<View>(null);
@@ -519,8 +544,8 @@ export default function TripDetailsScreen() {
   }));
 
   const OVERVIEW_TIPS = [
-    { text: 'Tap any section header to collapse or expand it.', target: 'flightsHeader' },
-    { text: 'Tap an airport code or housing address to get directions or copy it.', target: 'housingHeader' },
+    { text: 'Tap an airport code to get directions straight to your terminal.', target: 'flightsHeader' },
+    { text: 'Tap the address to get directions straight to your housing.', target: 'housingHeader' },
   ];
 
   const getOverviewTipNode = (target: string | undefined): View | null => {
@@ -539,21 +564,43 @@ export default function TripDetailsScreen() {
     };
   };
 
-  // Auto-show on first visit to overview tab.
+  // Hide tips when leaving overview tab.
   useEffect(() => {
-    if (activeTab === 'overview' && !overviewTipsShownRef.current && tripId) {
-      const key = `overview_tips_shown_${tripId}`;
-      AsyncStorage.getItem(key).then((val) => {
-        if (val !== 'true') {
-          setShowOverviewTips(true);
-          setOverviewTipIndex(0);
-          AsyncStorage.setItem(key, 'true');
-        }
-      });
-      overviewTipsShownRef.current = true;
+    if (activeTab !== 'overview') {
+      setShowOverviewTips(false);
+      overviewTipActiveRef.current = false;
     }
-    if (activeTab !== 'overview') setShowOverviewTips(false);
-  }, [activeTab, tripId]);
+  }, [activeTab]);
+
+  // Show flight tip once, the first time the user has a flight and visits overview.
+  useEffect(() => {
+    if (activeTab !== 'overview' || !tripId || flights.length === 0 || overviewTipActiveRef.current) return;
+    const key = `ov_flight_tip_${tripId}`;
+    AsyncStorage.getItem(key).then((val) => {
+      if (val !== 'true' && !overviewTipActiveRef.current) {
+        overviewTipActiveRef.current = true;
+        setOverviewTipIndex(0);
+        setShowOverviewTips(true);
+        AsyncStorage.setItem(key, 'true');
+      }
+    });
+  }, [activeTab, tripId, flights.length]);
+
+  // Show housing tip once, the first time the user has housing and visits overview.
+  useEffect(() => {
+    if (activeTab !== 'overview' || !tripId || overviewTipActiveRef.current) return;
+    const housing = tripId ? (sharedTrip ? (sharedTrip.housing ?? []) : (housingByTripId[tripId] ?? [])) : [];
+    if (housing.length === 0) return;
+    const key = `ov_housing_tip_${tripId}`;
+    AsyncStorage.getItem(key).then((val) => {
+      if (val !== 'true' && !overviewTipActiveRef.current) {
+        overviewTipActiveRef.current = true;
+        setOverviewTipIndex(1);
+        setShowOverviewTips(true);
+        AsyncStorage.setItem(key, 'true');
+      }
+    });
+  }, [activeTab, tripId, sharedTrip, housingByTripId]);
 
   // Open / close.
   useEffect(() => {
@@ -652,6 +699,7 @@ export default function TripDetailsScreen() {
                 onPress={() => {
                   setShowOverviewTips(false);
                   setOverviewTipIndex(0);
+                  setTimeout(() => { overviewTipActiveRef.current = false; }, 500);
                 }}>
                 <ThemedText style={styles.tipPillButtonText}>Got it ✓</ThemedText>
               </Pressable>
@@ -666,8 +714,6 @@ export default function TripDetailsScreen() {
   const [dayModalVisible, setDayModalVisible] = useState(false);
   const [dayName, setDayName] = useState('');
   const [editingDayId, setEditingDayId] = useState<string | null>(null);
-  const [dayDatePickerVisible, setDayDatePickerVisible] = useState(false);
-  const [dayDateDraft, setDayDateDraft] = useState(new Date());
 
   const [eventModalVisible, setEventModalVisible] = useState(false);
   const [eventName, setEventName] = useState('');
@@ -679,6 +725,9 @@ export default function TripDetailsScreen() {
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [eventTickets, setEventTickets] = useState<TicketAttachment[]>([]);
   const [ticketUploading, setTicketUploading] = useState(false);
+  const [eventEndTimeEnabled, setEventEndTimeEnabled] = useState(false);
+  const [eventEndTimeDate, setEventEndTimeDate] = useState(new Date());
+  const [itineraryView, setItineraryView] = useState<'list' | 'grid'>('list');
 
   // Upload a file (PDF or image) to Supabase Storage and return a TicketAttachment
   const uploadTicket = async (uri: string, fileName: string, mimeType: string): Promise<TicketAttachment> => {
@@ -1351,15 +1400,7 @@ export default function TripDetailsScreen() {
     return `${h}:${m}`;
   };
 
-  const formatTimeDisplay = (time24: string): string => {
-    const parts = time24.split(':');
-    const h = parseInt(parts[0], 10);
-    const m = parts[1] || '00';
-    if (isNaN(h)) return time24;
-    const period = h >= 12 ? 'PM' : 'AM';
-    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-    return `${h12}:${m} ${period}`;
-  };
+  const formatTimeDisplay = (time24: string): string => formatTime(time24);
 
   const parseTime24ToDate = (time24: string): Date => {
     const d = new Date();
@@ -1371,6 +1412,34 @@ export default function TripDetailsScreen() {
     d.setSeconds(0);
     d.setMilliseconds(0);
     return d;
+  };
+
+  const GRID_TIME_COL_WIDTH = 56;
+  const GRID_COLUMN_WIDTH = (Dimensions.get('window').width - GRID_TIME_COL_WIDTH - 12) / 3;
+  const GRID_SLOT_HEIGHT = 30;
+  const GRID_START_HOUR = 5;
+  const GRID_END_HOUR = 24;
+  const GRID_TOTAL_SLOTS = (GRID_END_HOUR - GRID_START_HOUR) * 2;
+  const GRID_TOTAL_HEIGHT = GRID_TOTAL_SLOTS * GRID_SLOT_HEIGHT;
+
+  const timeToGridMinutes = (time24: string): number => {
+    const [h, m] = time24.split(':').map((n) => parseInt(n, 10));
+    return (h - GRID_START_HOUR) * 60 + (m || 0);
+  };
+
+  const buildGridTimeLabels = (): string[] => {
+    const labels: string[] = [];
+    for (let h = GRID_START_HOUR; h < GRID_END_HOUR; h++) {
+      if (timeFormat === '24h') {
+        labels.push(`${String(h).padStart(2, '0')}:00`);
+        labels.push(`${String(h).padStart(2, '0')}:30`);
+      } else {
+        const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+        labels.push(h === 12 ? '12:00 PM' : `${h12}:00`);
+        labels.push(`${h12}:30`);
+      }
+    }
+    return labels;
   };
 
   const formatDayDate = (iso?: string): string => {
@@ -1482,16 +1551,17 @@ export default function TripDetailsScreen() {
   const formatTime12h = (time?: string) => {
     if (!time) return '';
     const value = time.trim();
+    // Normalize AM/PM input to 24h, then delegate to formatTime
     const ampm = value.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-    if (ampm) return `${Number(ampm[1])}:${ampm[2]} ${ampm[3].toUpperCase()}`;
-    const t24 = value.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
-    if (!t24) return value;
-    let h = Number(t24[1]);
-    const m = t24[2];
-    const ap = h >= 12 ? 'PM' : 'AM';
-    h = h % 12;
-    if (h === 0) h = 12;
-    return `${h}:${m} ${ap}`;
+    if (ampm) {
+      let h = Number(ampm[1]);
+      const m = ampm[2];
+      const ap = ampm[3].toUpperCase();
+      if (ap === 'PM' && h < 12) h += 12;
+      if (ap === 'AM' && h === 12) h = 0;
+      return formatTime(`${String(h).padStart(2, '0')}:${m}`);
+    }
+    return formatTime(value);
   };
 
   const formatFlightDayLine = (flight: {
@@ -1885,20 +1955,38 @@ export default function TripDetailsScreen() {
 
     try {
       const flightIata = `${airlineIata}${flightNumOnly}`;
-      const url = `https://aerodatabox.p.rapidapi.com/flights/number/${encodeURIComponent(flightIata)}/${encodeURIComponent(date)}`;
 
-      const res = await fetch(url, {
-        headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': 'aerodatabox.p.rapidapi.com',
-        },
-      });
-      const json = (await res.json()) as any;
+      const fetchForDate = async (d: string) => {
+        const url = `https://aerodatabox.p.rapidapi.com/flights/number/${encodeURIComponent(flightIata)}/${encodeURIComponent(d)}`;
+        const res = await fetch(url, {
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': 'aerodatabox.p.rapidapi.com',
+          },
+        });
+        const json = (await res.json()) as any;
+        return { res, json };
+      };
+
+      let { res, json } = await fetchForDate(date);
 
       if (!res.ok) {
         const message = typeof json?.message === 'string' ? json.message : undefined;
         setFlightError(`Flight lookup error: ${message ?? 'Request failed.'}`);
         return;
+      }
+
+      // AeroDataBox indexes overnight flights by their UTC departure date, which can
+      // be one day ahead of the local departure date. Retry with +1 day automatically.
+      if (!Array.isArray(json) || json.length === 0) {
+        const nextDay = new Date(date);
+        nextDay.setDate(nextDay.getDate() + 1);
+        const nextDate = nextDay.toISOString().slice(0, 10);
+        const retry = await fetchForDate(nextDate);
+        if (retry.res.ok) {
+          res = retry.res;
+          json = retry.json;
+        }
       }
 
       const flights = Array.isArray(json) ? json : [];
@@ -1983,6 +2071,153 @@ export default function TripDetailsScreen() {
     { key: 'feed' as const, label: 'Feed' },
   ];
 
+  const renderItineraryGrid = () => {
+    const sortedDays = [...itineraryDays].sort((a, b) => {
+      if (!a.date && !b.date) return 0;
+      if (!a.date) return 1;
+      if (!b.date) return -1;
+      return a.date.localeCompare(b.date);
+    });
+    const timeLabels = buildGridTimeLabels();
+    const totalGridWidth = sortedDays.length * GRID_COLUMN_WIDTH;
+
+    const openEditEvent = (dayId: string, e: ItineraryEvent) => {
+      setSelectedDayId(dayId);
+      setEditingEventId(e.id);
+      setEventName(e.name);
+      setEventTime(e.time);
+      setEventTimeDate(parseTime24ToDate(e.time));
+      setEventLocation(e.location ?? '');
+      setEventNotes(e.notes ?? '');
+      setEventTickets(e.tickets ?? []);
+      setEventEndTimeEnabled(!!e.endTime);
+      setEventEndTimeDate(e.endTime ? parseTime24ToDate(e.endTime) : new Date());
+      setEventError(null);
+      setEventModalVisible(true);
+    };
+
+    return (
+      <View style={{ flex: 1, marginLeft: -20 }}>
+        <View style={{ flexDirection: 'row' }}>
+          <View style={{ width: GRID_TIME_COL_WIDTH }} />
+          <ScrollView
+            horizontal
+            scrollEnabled={false}
+            ref={headerScrollRef}
+            showsHorizontalScrollIndicator={false}>
+            <View style={{ flexDirection: 'row', width: totalGridWidth }}>
+              {sortedDays.map((day) => (
+                <View
+                  key={day.id}
+                  style={{ width: GRID_COLUMN_WIDTH, paddingVertical: 8, alignItems: 'center', borderBottomWidth: 1, borderColor: colors.border }}>
+                  <ThemedText style={{ fontSize: 13, fontWeight: '700' }} numberOfLines={1}>
+                    {day.label}
+                  </ThemedText>
+                  {day.date ? (
+                    <ThemedText style={{ fontSize: 11, color: colors.icon }}>
+                      {formatDayDate(day.date)}
+                    </ThemedText>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          </ScrollView>
+        </View>
+
+        <ScrollView showsVerticalScrollIndicator={false}>
+          <View style={{ flexDirection: 'row' }}>
+            <View style={{ width: GRID_TIME_COL_WIDTH }}>
+              {timeLabels.map((label, i) => (
+                <View
+                  key={`${label}-${i}`}
+                  style={{
+                    height: GRID_SLOT_HEIGHT,
+                    justifyContent: 'flex-start',
+                    alignItems: 'flex-end',
+                    paddingRight: 6,
+                    paddingTop: 2,
+                  }}>
+                  <ThemedText style={{ fontSize: 10, color: colors.icon }}>{label}</ThemedText>
+                </View>
+              ))}
+            </View>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              onScroll={(e) => {
+                headerScrollRef.current?.scrollTo({ x: e.nativeEvent.contentOffset.x, animated: false });
+              }}
+              scrollEventThrottle={16}>
+              <View style={{ flexDirection: 'row', width: totalGridWidth, height: GRID_TOTAL_HEIGHT }}>
+                {sortedDays.map((day) => (
+                  <View
+                    key={day.id}
+                    style={{
+                      width: GRID_COLUMN_WIDTH,
+                      height: GRID_TOTAL_HEIGHT,
+                      borderLeftWidth: 1,
+                      borderColor: colors.border,
+                      position: 'relative',
+                    }}>
+                    {timeLabels.map((_, i) => (
+                      <View
+                        key={`slot-${i}`}
+                        style={{
+                          position: 'absolute',
+                          left: 0,
+                          right: 0,
+                          top: i * GRID_SLOT_HEIGHT,
+                          height: 1,
+                          backgroundColor: colors.border,
+                          opacity: i % 2 === 0 ? 0.7 : 0.3,
+                        }}
+                      />
+                    ))}
+                    {day.events.map((e) => {
+                      if (!e.time) return null;
+                      const startMins = timeToGridMinutes(e.time);
+                      const endMins = e.endTime ? timeToGridMinutes(e.endTime) : startMins + 60;
+                      const clampedStart = Math.max(0, startMins);
+                      const clampedEnd = Math.min(GRID_TOTAL_SLOTS * 30, endMins);
+                      if (clampedEnd <= 0 || clampedStart >= GRID_TOTAL_SLOTS * 30) return null;
+                      const top = (clampedStart / 30) * GRID_SLOT_HEIGHT;
+                      const height = Math.max(((clampedEnd - clampedStart) / 30) * GRID_SLOT_HEIGHT, GRID_SLOT_HEIGHT);
+                      return (
+                        <Pressable
+                          key={e.id}
+                          onPress={() => openEditEvent(day.id, e)}
+                          style={{
+                            position: 'absolute',
+                            top,
+                            height,
+                            left: 2,
+                            right: 2,
+                            backgroundColor: colors.primary,
+                            borderRadius: 4,
+                            paddingHorizontal: 4,
+                            paddingVertical: 2,
+                            overflow: 'hidden',
+                          }}>
+                          <ThemedText style={{ fontSize: 11, fontWeight: '700', color: '#fff' }} numberOfLines={1}>
+                            {e.name}
+                          </ThemedText>
+                          <ThemedText style={{ fontSize: 9, color: 'rgba(255,255,255,0.8)' }} numberOfLines={1}>
+                            {e.endTime ? `${formatTimeDisplay(e.time)} – ${formatTimeDisplay(e.endTime)}` : formatTimeDisplay(e.time)}
+                          </ThemedText>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ))}
+              </View>
+            </ScrollView>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  };
+
   const renderTabContent = () => {
     switch (activeTab) {
       case 'overview':
@@ -2037,7 +2272,6 @@ export default function TripDetailsScreen() {
                   }}
                   style={{
                     marginHorizontal: 16,
-                    marginTop: 10,
                     borderRadius: 14,
                     paddingVertical: 12,
                     alignItems: 'center',
@@ -2107,7 +2341,7 @@ export default function TripDetailsScreen() {
                                     const code = f.from;
                                     if (!code || code === '—') return;
                                     const city = f.fromCity ?? code;
-                                    const query = encodeURIComponent(`${city} Airport`);
+                                    const query = encodeURIComponent(`${code} Airport`);
                                     Alert.alert(code, `Navigate to ${city} Airport`, [
                                       { text: 'Google Maps', onPress: () => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${query}`) },
                                       { text: 'Apple Maps', onPress: () => Linking.openURL(`maps://?q=${query}`) },
@@ -2127,7 +2361,7 @@ export default function TripDetailsScreen() {
                                     const code = f.to;
                                     if (!code || code === '—') return;
                                     const city = f.toCity ?? code;
-                                    const query = encodeURIComponent(`${city} Airport`);
+                                    const query = encodeURIComponent(`${code} Airport`);
                                     Alert.alert(code, `Navigate to ${city} Airport`, [
                                       { text: 'Google Maps', onPress: () => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${query}`) },
                                       { text: 'Apple Maps', onPress: () => Linking.openURL(`maps://?q=${query}`) },
@@ -2284,7 +2518,7 @@ export default function TripDetailsScreen() {
               <Modal visible={housingModalVisible} transparent animationType="fade">
                 <View style={styles.modalOverlay}>
                   <View style={[styles.modalCard, styles.flightModalCard, { backgroundColor: colors.surface }]}>
-                    <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
+                    <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent} showsVerticalScrollIndicator={false}>
                       <ThemedText style={styles.modalTitle}>Add Housing</ThemedText>
 
                       <TextInput
@@ -2379,7 +2613,7 @@ export default function TripDetailsScreen() {
                           <TextInput
                             value={housingCheckIn}
                             onChangeText={setHousingCheckIn}
-                            placeholder="e.g. 3:00 PM"
+                            placeholder={timeFormat === '24h' ? 'e.g. 15:00' : 'e.g. 3:00 PM'}
                             placeholderTextColor="#888"
                             style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
                           />
@@ -2389,7 +2623,7 @@ export default function TripDetailsScreen() {
                           <TextInput
                             value={housingCheckOut}
                             onChangeText={setHousingCheckOut}
-                            placeholder="e.g. 11:00 AM"
+                            placeholder={timeFormat === '24h' ? 'e.g. 11:00' : 'e.g. 11:00 AM'}
                             placeholderTextColor="#888"
                             style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
                           />
@@ -2605,7 +2839,7 @@ export default function TripDetailsScreen() {
                           />
                           {flightLookupAirlineQuery.trim().length > 0 && !flightLookupAirlineIata ? (
                             <View style={[styles.airlineResultsFloat, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
-                              <ScrollView keyboardShouldPersistTaps="handled">
+                              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                                 {airlineOptions
                                   .filter(
                                     (a) =>
@@ -2749,7 +2983,7 @@ export default function TripDetailsScreen() {
                         </View>
                       </View>
                     ) : (
-                      <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent} keyboardShouldPersistTaps="handled">
+                      <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                         <ThemedText style={styles.modalSubtitle}>Confirm details</ThemedText>
 
                         {/* Flight card preview — same style as overview */}
@@ -2927,6 +3161,21 @@ export default function TripDetailsScreen() {
                                 } else {
                                   addFlight(tripId, payload);
                                 }
+                                // Sync a new itinerary event for the flight on the matching day
+                                const matchingDay = itineraryDays.find((d) => d.date === depDate);
+                                if (matchingDay) {
+                                  const from = payload.from ?? payload.fromCity ?? '';
+                                  const to = payload.to ?? payload.toCity ?? '';
+                                  const num = payload.flightNumber ?? '';
+                                  const airline = payload.airline ?? '';
+                                  const eventLabel = [airline, num, from && to ? `${from} → ${to}` : ''].filter(Boolean).join(' · ');
+                                  const eventEndTime = payload.arrivalDate === depDate ? (payload.arrivalTime ?? undefined) : undefined;
+                                  if (sharedTrip) {
+                                    addSharedItineraryEvent(sharedTrip.id, matchingDay.id, eventLabel || 'Flight', depTime, undefined, undefined, undefined, eventEndTime);
+                                  } else {
+                                    addItineraryEvent(tripId, matchingDay.id, eventLabel || 'Flight', depTime, undefined, undefined, undefined, eventEndTime);
+                                  }
+                                }
                               }
                               setFlightModalVisible(false);
                               setFlightError(null);
@@ -2945,10 +3194,24 @@ export default function TripDetailsScreen() {
       case 'itinerary':
         return (
           <ThemedView style={styles.tabContent}>
-            <ThemedText style={styles.sectionTitle}>Itinerary</ThemedText>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <ThemedText style={[styles.sectionTitle, { marginBottom: 0 }]}>Itinerary</ThemedText>
+              <Pressable
+                hitSlop={8}
+                style={[styles.editToggleButton, { borderColor: colors.border }]}
+                onPress={() => setItineraryView((v) => (v === 'list' ? 'grid' : 'list'))}>
+                <IconSymbol
+                  name={itineraryView === 'list' ? 'rectangle.grid.2x2' : 'list.bullet'}
+                  size={18}
+                  color={colors.primary}
+                />
+              </Pressable>
+            </View>
 
             {!tripId ? (
               <ThemedText>Trip not found.</ThemedText>
+            ) : itineraryView === 'grid' ? (
+              renderItineraryGrid()
             ) : (
               <View ref={dayCardsRef} collapsable={false}>
               <ThemedView style={styles.itineraryContainer}>
@@ -2992,21 +3255,6 @@ export default function TripDetailsScreen() {
                                   setDayModalVisible(true);
                                 },
                               },
-                              {
-                                text: 'Delete',
-                                style: 'destructive',
-                                onPress: () => {
-                                  if (!tripId) return;
-                                  sharedTrip
-                                    ? deleteSharedItineraryDay(sharedTrip.id, day.id)
-                                    : deleteItineraryDay(tripId, day.id);
-                                  setExpandedDayIds((prev) => {
-                                    const next = new Set(prev);
-                                    next.delete(day.id);
-                                    return next;
-                                  });
-                                },
-                              },
                               { text: 'Cancel', style: 'cancel' },
                             ]);
                           }}>
@@ -3039,7 +3287,7 @@ export default function TripDetailsScreen() {
                                       <View style={[styles.eventTimePill, { backgroundColor: colors.primary + '18' }]}>
                                         <IconSymbol name="clock" size={13} color={colors.primary} />
                                         <ThemedText style={[styles.eventTimePillText, { color: colors.primary }]}>
-                                          {formatTimeDisplay(e.time)}
+                                          {e.endTime ? `${formatTimeDisplay(e.time)} – ${formatTimeDisplay(e.endTime)}` : formatTimeDisplay(e.time)}
                                         </ThemedText>
                                       </View>
 
@@ -3058,6 +3306,8 @@ export default function TripDetailsScreen() {
                                               setEventLocation(e.location ?? '');
                                               setEventNotes(e.notes ?? '');
                                               setEventTickets(e.tickets ?? []);
+                                              setEventEndTimeEnabled(!!e.endTime);
+                                              setEventEndTimeDate(e.endTime ? parseTime24ToDate(e.endTime) : new Date());
                                               setEventError(null);
                                               setEventModalVisible(true);
                                             }}>
@@ -3159,6 +3409,8 @@ export default function TripDetailsScreen() {
                                 setEventLocation('');
                                 setEventNotes('');
                                 setEventTickets([]);
+                                setEventEndTimeEnabled(false);
+                                setEventEndTimeDate(new Date());
                                 setEventError(null);
                                 setEditingEventId(null);
                                 setEventModalVisible(true);
@@ -3185,44 +3437,15 @@ export default function TripDetailsScreen() {
             <Modal visible={dayModalVisible} transparent animationType="fade">
               <View style={styles.modalOverlay}>
                 <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
-                  <ThemedText style={styles.modalTitle}>
-                    {editingDayId ? 'Give a headline to your day!' : 'Add Day'}
-                  </ThemedText>
+                  <ThemedText style={styles.modalTitle}>Give a headline to your day!</ThemedText>
 
                   <TextInput
                     value={dayName}
                     onChangeText={setDayName}
-                    placeholder={editingDayId ? 'e.g. Beach Day, City Tour...' : 'Day name'}
+                    placeholder="e.g. Beach Day, City Tour..."
                     placeholderTextColor="#888"
                     style={[styles.modalInput, { borderColor: colors.border, color: colors.inputText }]}
                   />
-
-                  {/* Date picker — only shown when adding a new day */}
-                  {!editingDayId ? (
-                    <>
-                      <Pressable
-                        style={[styles.modalInput, { borderColor: dayDatePickerVisible ? colors.primary : colors.border, justifyContent: 'center', flexDirection: 'row', alignItems: 'center', gap: 6 }]}
-                        onPress={() => setDayDatePickerVisible((v) => !v)}>
-                        <IconSymbol name="calendar" size={15} color={dayDatePickerVisible ? colors.primary : colors.icon} />
-                        <ThemedText style={{ color: dayDatePickerVisible ? colors.primary : colors.inputText, flex: 1 }}>
-                          {formatLongDate(toLocalIsoDate(dayDateDraft))}
-                        </ThemedText>
-                        <ThemedText style={{ color: colors.icon, fontSize: 12 }}>
-                          {dayDatePickerVisible ? 'Hide' : 'Change'}
-                        </ThemedText>
-                      </Pressable>
-
-                      {dayDatePickerVisible ? (
-                        <DateTimePicker
-                          value={dayDateDraft}
-                          mode="date"
-                          display="spinner"
-                          onChange={(_e, d) => { if (d) setDayDateDraft(d); }}
-                          textColor={colors.text}
-                        />
-                      ) : null}
-                    </>
-                  ) : null}
 
                   <View style={styles.modalActions}>
                     <Pressable
@@ -3230,8 +3453,6 @@ export default function TripDetailsScreen() {
                       onPress={() => {
                         setDayModalVisible(false);
                         setDayName('');
-                        setDayDatePickerVisible(false);
-                        setDayDateDraft(new Date());
                         setEditingDayId(null);
                       }}>
                       <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
@@ -3244,34 +3465,11 @@ export default function TripDetailsScreen() {
                         { backgroundColor: colors.primary, borderColor: colors.primary },
                       ]}
                       onPress={() => {
-                        if (!tripId) return;
+                        if (!tripId || !editingDayId) return;
                         const label = dayName.trim();
-
-                        if (editingDayId) {
-                          sharedTrip ? updateSharedItineraryDay(sharedTrip.id, editingDayId, label) : updateItineraryDay(tripId, editingDayId, label);
-                          setDayModalVisible(false);
-                          setDayName('');
-                          setEditingDayId(null);
-                          return;
-                        }
-
-                        const dateArg = toLocalIsoDate(dayDateDraft);
-                        if (itineraryDays.some((d) => d.date === dateArg)) {
-                          Alert.alert('Day already exists', 'A day for this date has already been added.');
-                          return;
-                        }
-                        if (sharedTrip) {
-                          addSharedItineraryDay(sharedTrip.id, label, dateArg).then((day) => {
-                            setExpandedDayIds((prev) => new Set(prev).add(day.id));
-                          });
-                        } else {
-                          const day = addItineraryDay(tripId, label, dateArg);
-                          setExpandedDayIds((prev) => new Set(prev).add(day.id));
-                        }
+                        sharedTrip ? updateSharedItineraryDay(sharedTrip.id, editingDayId, label) : updateItineraryDay(tripId, editingDayId, label);
                         setDayModalVisible(false);
                         setDayName('');
-                        setDayDatePickerVisible(false);
-                        setDayDateDraft(new Date());
                         setEditingDayId(null);
                       }}>
                       <ThemedText style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Save</ThemedText>
@@ -3330,6 +3528,38 @@ export default function TripDetailsScreen() {
                       }}
                     />
                   </View>
+
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
+                    <ThemedText style={[styles.eventModalSectionLabel, { marginTop: 0 }]}>End Time</ThemedText>
+                    <Switch
+                      value={eventEndTimeEnabled}
+                      onValueChange={(v) => {
+                        setEventEndTimeEnabled(v);
+                        if (v) {
+                          const d = new Date(eventTimeDate);
+                          d.setHours(d.getHours() + 1);
+                          setEventEndTimeDate(d);
+                        }
+                      }}
+                      trackColor={{ false: colors.border, true: colors.primary + '66' }}
+                      thumbColor={eventEndTimeEnabled ? colors.primary : colors.icon}
+                    />
+                  </View>
+                  {eventEndTimeEnabled && (
+                    <View style={[styles.timePickerContainer, { borderColor: colors.border }]}>
+                      <DateTimePicker
+                        value={eventEndTimeDate}
+                        mode="time"
+                        display="spinner"
+                        minuteInterval={5}
+                        onChange={(_e: DateTimePickerEvent, date?: Date) => {
+                          if (date instanceof Date && !Number.isNaN(date.getTime())) {
+                            setEventEndTimeDate(date);
+                          }
+                        }}
+                      />
+                    </View>
+                  )}
 
                   <ThemedText style={styles.eventModalSectionLabel}>Notes</ThemedText>
                   <TextInput
@@ -3397,6 +3627,8 @@ export default function TripDetailsScreen() {
                         setEventTime('');
                         setEventLocation('');
                         setEventTickets([]);
+                        setEventEndTimeEnabled(false);
+                        setEventEndTimeDate(new Date());
                         setEventError(null);
                         setEditingEventId(null);
                         // Closing the modal during the tour ends it.
@@ -3426,6 +3658,11 @@ export default function TripDetailsScreen() {
                         }
 
                         const notes = eventNotes.trim();
+                        const endTime24 = eventEndTimeEnabled ? formatTime24(eventEndTimeDate) : undefined;
+                        if (endTime24 && endTime24 <= time) {
+                          setEventError('End time must be after start time.');
+                          return;
+                        }
 
                         if (editingEventId) {
                           if (sharedTrip) {
@@ -3435,6 +3672,7 @@ export default function TripDetailsScreen() {
                               location: location ? location : undefined,
                               notes: notes ? notes : undefined,
                               tickets: eventTickets,
+                              endTime: endTime24,
                             });
                           } else {
                             updateItineraryEvent(tripId, selectedDayId, editingEventId, {
@@ -3443,13 +3681,14 @@ export default function TripDetailsScreen() {
                               location: location ? location : undefined,
                               notes: notes ? notes : undefined,
                               tickets: eventTickets,
+                              endTime: endTime24,
                             });
                           }
                         } else {
                           if (sharedTrip) {
-                            addSharedItineraryEvent(sharedTrip.id, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets);
+                            addSharedItineraryEvent(sharedTrip.id, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets, endTime24);
                           } else {
-                            addItineraryEvent(tripId, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets);
+                            addItineraryEvent(tripId, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets, endTime24);
                           }
                         }
 
@@ -3459,6 +3698,8 @@ export default function TripDetailsScreen() {
                         setEventLocation('');
                         setEventNotes('');
                         setEventTickets([]);
+                        setEventEndTimeEnabled(false);
+                        setEventEndTimeDate(new Date());
                         setEventError(null);
                         setEditingEventId(null);
                         // Saving while on a modal tip ends the tour.
@@ -3912,7 +4153,7 @@ export default function TripDetailsScreen() {
                     <View style={styles.modalOverlay}>
                       <View style={[styles.modalCard, { backgroundColor: colors.surface, maxHeight: '70%' }]}>
                         <ThemedText style={styles.modalTitle}>Paid by</ThemedText>
-                        <ScrollView style={{ marginBottom: 8 }}>
+                        <ScrollView style={{ marginBottom: 8 }} showsVerticalScrollIndicator={false}>
                           {tripPeople.map((p) => {
                             const selected = paidBy === p.id;
                             return (
@@ -4018,7 +4259,7 @@ export default function TripDetailsScreen() {
                             {expenseCurrency} {(expenseAmountValue / (splitWith.length + 1)).toFixed(2)} per person
                           </ThemedText>
                         )}
-                        <ScrollView style={{ marginBottom: 8 }}>
+                        <ScrollView style={{ marginBottom: 8 }} showsVerticalScrollIndicator={false}>
                           {tripPeople
                             .filter((p) => p.id !== (paidBy ?? uid))
                             .map((p) => {
@@ -4531,6 +4772,7 @@ export default function TripDetailsScreen() {
     <ThemedView style={styles.container}>
       <ScrollView
         style={{ flex: 1 }}
+        showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], {
           useNativeDriver: false,
@@ -4689,7 +4931,7 @@ export default function TripDetailsScreen() {
           </ThemedView>
 
           <View style={styles.globalEditOverlay} pointerEvents="box-none">
-            {activeTab === 'overview' || activeTab === 'feed' || activeTab === 'photos' || (activeTab === 'itinerary' && !editMode) ? null : (
+            {activeTab === 'overview' || activeTab === 'feed' || activeTab === 'photos' || activeTab === 'itinerary' ? null : (
               <Pressable
                 style={[
                   styles.globalPlusButton,
@@ -4698,16 +4940,6 @@ export default function TripDetailsScreen() {
                 ]}
                 onPress={() => {
                   if (!tripId) return;
-                  if (activeTab === 'itinerary') {
-                    setDayName('');
-                    // Pre-fill with trip start date if available, otherwise today
-                    const defaultDate = trip?.startDate ? new Date(trip.startDate + 'T12:00:00') : new Date();
-                    setDayDateDraft(isNaN(defaultDate.getTime()) ? new Date() : defaultDate);
-                    setDayDatePickerVisible(true);
-                    setEditingDayId(null);
-                    setDayModalVisible(true);
-                    return;
-                  }
                   if (activeTab === 'finances') {
                     openExpenseModal();
                     return;
@@ -4718,11 +4950,7 @@ export default function TripDetailsScreen() {
                   }
                 }}>
                 <IconSymbol name="plus" size={22} color={colors.primary} />
-                {activeTab === 'itinerary' ? (
-                  <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
-                    Add Day
-                  </ThemedText>
-                ) : activeTab === 'finances' ? (
+                {activeTab === 'finances' ? (
                   <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
                     Add Expense
                   </ThemedText>
@@ -4973,7 +5201,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   scrollContentContainer: {
-    paddingBottom: 24,
+    paddingBottom: 200,
   },
   tabContent: {
     gap: 12,
@@ -4986,7 +5214,7 @@ const styles = StyleSheet.create({
   countdownText: {
     fontSize: 16,
     fontWeight: '600',
-    marginBottom: 8,
+    marginBottom: -10,
   },
   flightCard: {
     borderWidth: 1,

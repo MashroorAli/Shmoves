@@ -2,6 +2,29 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 
 import { supabase } from '@/config/supabase';
 
+function syncItineraryToRange(existing: ItineraryDay[], startDate: string, endDate: string): ItineraryDay[] {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return existing;
+
+  const msPerDay = 86400000;
+  const totalDays = Math.round((end.getTime() - start.getTime()) / msPerDay) + 1;
+  const allDates: string[] = Array.from({ length: totalDays }, (_, i) =>
+    new Date(start.getTime() + i * msPerDay).toISOString().slice(0, 10),
+  );
+
+  const existingByDate = new Map(existing.map((d) => [d.date, d]));
+
+  return allDates.map((date, i) =>
+    existingByDate.get(date) ?? {
+      id: `day-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${i}`,
+      label: `Day ${i + 1}`,
+      date,
+      events: [],
+    },
+  );
+}
+
 export interface Trip {
   id: string;
   destination: string;
@@ -21,6 +44,7 @@ export interface ItineraryEvent {
   id: string;
   name: string;
   time: string;
+  endTime?: string;
   location?: string;
   notes?: string;
   tickets?: TicketAttachment[];
@@ -57,6 +81,7 @@ export interface TripExpense {
   splitType?: 'even';
   splitWith?: string[];
   createdBy?: string;
+  paidBy?: string;
   createdAt: string;
 }
 
@@ -81,6 +106,7 @@ export interface JournalEntry {
 interface TripsContextValue {
   trips: Trip[];
   addTrip: (trip: Omit<Trip, 'id'>) => Trip;
+  updateTrip: (tripId: string, updates: { destination: string; startDate: string; endDate: string }) => Trip;
   deleteTrip: (tripId: string) => Promise<void>;
   setTripPublic: (tripId: string, isPublic: boolean) => void;
   flightsByTripId: Record<string, FlightInfo[]>;
@@ -90,26 +116,26 @@ interface TripsContextValue {
   clearFlights: (tripId: string) => void;
   itineraryByTripId: Record<string, ItineraryDay[]>;
   addItineraryDay: (tripId: string, label: string, date: string) => ItineraryDay;
-  addItineraryEvent: (tripId: string, dayId: string, name: string, time: string, location?: string, notes?: string, tickets?: TicketAttachment[]) => ItineraryEvent;
+  addItineraryEvent: (tripId: string, dayId: string, name: string, time: string, location?: string, notes?: string, tickets?: TicketAttachment[], endTime?: string) => ItineraryEvent;
   updateItineraryDay: (tripId: string, dayId: string, label: string) => void;
   deleteItineraryDay: (tripId: string, dayId: string) => void;
   updateItineraryEvent: (
     tripId: string,
     dayId: string,
     eventId: string,
-    updates: { name: string; time: string; location?: string; notes?: string; tickets?: TicketAttachment[] }
+    updates: { name: string; time: string; location?: string; notes?: string; tickets?: TicketAttachment[]; endTime?: string }
   ) => void;
   deleteItineraryEvent: (tripId: string, dayId: string, eventId: string) => void;
 
   expensesByTripId: Record<string, TripExpense[]>;
   addExpense: (
     tripId: string,
-    expense: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }
+    expense: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[]; paidBy?: string }
   ) => TripExpense;
   updateExpense: (
     tripId: string,
     expenseId: string,
-    updates: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[] }
+    updates: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[]; paidBy?: string }
   ) => void;
   deleteExpense: (tripId: string, expenseId: string) => void;
 
@@ -305,6 +331,41 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
       return newTrip;
     };
 
+    const updateTrip: TripsContextValue['updateTrip'] = (tripId, updates) => {
+      const oldTrip = trips.find((t) => t.id === tripId);
+      const newId = `${updates.destination}|${updates.startDate}|${updates.endDate}`;
+      const updatedTrip: Trip = { id: newId, ...updates, isPublic: oldTrip?.isPublic };
+
+      setTrips((prev) => prev.map((t) => (t.id === tripId ? updatedTrip : t)));
+
+      setItineraryByTripId((prev) => {
+        const { [tripId]: data, ...rest } = prev;
+        const synced = syncItineraryToRange(data ?? [], updates.startDate, updates.endDate);
+        return { ...rest, [newId]: synced };
+      });
+
+      if (newId !== tripId) {
+        setFlightsByTripId((prev) => {
+          const { [tripId]: data, ...rest } = prev;
+          return data ? { ...rest, [newId]: data } : rest;
+        });
+        setExpensesByTripId((prev) => {
+          const { [tripId]: data, ...rest } = prev;
+          return data ? { ...rest, [newId]: data } : rest;
+        });
+        setJournalByTripId((prev) => {
+          const { [tripId]: data, ...rest } = prev;
+          return data ? { ...rest, [newId]: data } : rest;
+        });
+        setHousingByTripId((prev) => {
+          const { [tripId]: data, ...rest } = prev;
+          return data ? { ...rest, [newId]: data } : rest;
+        });
+      }
+
+      return updatedTrip;
+    };
+
     const deleteTrip: TripsContextValue['deleteTrip'] = async (tripId) => {
       if (persistTimer.current) {
         clearTimeout(persistTimer.current);
@@ -411,11 +472,12 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
       return createdDay;
     };
 
-    const addItineraryEvent: TripsContextValue['addItineraryEvent'] = (tripId, dayId, name, time, location, notes, tickets) => {
+    const addItineraryEvent: TripsContextValue['addItineraryEvent'] = (tripId, dayId, name, time, location, notes, tickets, endTime) => {
       const createdEvent: ItineraryEvent = {
         id: `event-${Date.now()}`,
         name,
         time,
+        endTime: endTime ?? undefined,
         location,
         notes: notes?.trim() || undefined,
         tickets: tickets && tickets.length > 0 ? tickets : undefined,
@@ -473,6 +535,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
               location: nextLocation ? nextLocation : undefined,
               notes: updates.notes?.trim() || undefined,
               tickets: updates.tickets !== undefined ? updates.tickets : e.tickets,
+              endTime: updates.endTime ?? undefined,
             };
           });
           return { ...day, events: nextEvents };
@@ -501,6 +564,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
         isSplit: expense.isSplit,
         splitType: expense.splitType,
         splitWith: expense.splitWith,
+        paidBy: expense.paidBy,
         createdAt: new Date().toISOString(),
       };
 
@@ -532,6 +596,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
                 isSplit: nextIsSplit,
                 splitType: updates.splitType,
                 splitWith: updates.splitWith,
+                paidBy: updates.paidBy,
               }
             : e
         );
@@ -611,6 +676,7 @@ export function TripsProvider({ children, userKey }: TripsProviderProps) {
     return {
       trips,
       addTrip,
+      updateTrip,
       deleteTrip,
       setTripPublic,
       flightsByTripId,

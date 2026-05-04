@@ -1,7 +1,8 @@
+import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
-import React, { useMemo } from 'react';
-import { ActionSheetIOS, Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { ActionSheetIOS, Alert, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -14,10 +15,56 @@ import { useColors } from '@/hooks/use-colors';
 export default function MyTripsScreen() {
   const router = useRouter();
   const { uid } = useAuth();
-  const { trips, deleteTrip } = useTrips();
-  const { sharedTrips, pendingInvites, acceptInvite, declineInvite, deleteSharedTrip, leaveSharedTrip } = useSharedTrips();
+  const { trips, deleteTrip, updateTrip } = useTrips();
+  const { sharedTrips, pendingInvites, acceptInvite, declineInvite, deleteSharedTrip, leaveSharedTrip, updateSharedTripDetails } = useSharedTrips();
   const colors = useColors();
 
+
+  type MergedTrip = Trip & { isShared?: boolean; sharedTripId?: string };
+  type EditingTrip = { trip: MergedTrip; isShared: boolean };
+  const [editingTrip, setEditingTrip] = useState<EditingTrip | null>(null);
+  const [editDestination, setEditDestination] = useState('');
+  const [editStartDate, setEditStartDate] = useState<Date>(new Date());
+  const [editEndDate, setEditEndDate] = useState<Date>(new Date());
+  const [editStartPickerVisible, setEditStartPickerVisible] = useState(false);
+  const [editEndPickerVisible, setEditEndPickerVisible] = useState(false);
+  const [editBusy, setEditBusy] = useState(false);
+
+  const toLocalIsoDate = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  const openEdit = (trip: MergedTrip) => {
+    const start = parseLocalDate(trip.startDate) ?? new Date();
+    const end = parseLocalDate(trip.endDate) ?? new Date();
+    setEditDestination(trip.destination);
+    setEditStartDate(start);
+    setEditEndDate(end);
+    setEditingTrip({ trip, isShared: !!trip.isShared });
+  };
+
+  const saveEdit = async () => {
+    if (!editingTrip) return;
+    const destination = editDestination.trim();
+    if (!destination) { Alert.alert('Missing destination', 'Please enter a destination.'); return; }
+    setEditBusy(true);
+    try {
+      const updates = {
+        destination,
+        startDate: toLocalIsoDate(editStartDate),
+        endDate: toLocalIsoDate(editEndDate),
+      };
+      if (editingTrip.isShared && editingTrip.trip.sharedTripId) {
+        await updateSharedTripDetails(editingTrip.trip.sharedTripId, updates);
+      } else {
+        updateTrip(editingTrip.trip.id, updates);
+      }
+      setEditingTrip(null);
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Could not save changes.');
+    } finally {
+      setEditBusy(false);
+    }
+  };
 
   const parseLocalDate = (value?: string) => {
     if (!value) return undefined;
@@ -66,7 +113,6 @@ export default function MyTripsScreen() {
   };
 
   // Merge personal trips and shared trips into a single list
-  type MergedTrip = Trip & { isShared?: boolean; sharedTripId?: string };
 
   const { currentTrips, upcomingTrips, pastTrips, daysUntilNext } = useMemo(() => {
     const today = new Date();
@@ -132,37 +178,42 @@ export default function MyTripsScreen() {
       const sharedData = sharedTrips.find((st) => st.id === trip.sharedTripId);
       const isOwner = sharedData?.ownerId === uid;
 
+      const options = isOwner
+        ? ['Edit Trip', 'Delete', 'Cancel']
+        : ['Leave', 'Cancel'];
+      const destructiveIndex = isOwner ? 1 : 0;
+      const cancelIndex = isOwner ? 2 : 1;
+
       ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options: [isOwner ? 'Delete' : 'Leave', 'Cancel'],
-          destructiveButtonIndex: 0,
-          cancelButtonIndex: 1,
-        },
+        { options, destructiveButtonIndex: destructiveIndex, cancelButtonIndex: cancelIndex },
         (index) => {
-          if (index !== 0) return;
           if (isOwner) {
-            Alert.alert(
-              'Delete Trip?',
-              'This will permanently delete the trip for everyone in the group.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Delete', style: 'destructive', onPress: async () => { await deleteSharedTrip(trip.sharedTripId!); await deleteTrip(trip.id); } },
-              ],
-            );
+            if (index === 0) openEdit(trip);
+            if (index === 1) {
+              Alert.alert(
+                'Delete Trip?',
+                'This will permanently delete the trip for everyone in the group.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Delete', style: 'destructive', onPress: async () => { await deleteSharedTrip(trip.sharedTripId!); await deleteTrip(trip.id); } },
+                ],
+              );
+            }
           } else {
-            leaveSharedTrip(trip.sharedTripId!);
+            if (index === 0) leaveSharedTrip(trip.sharedTripId!);
           }
         },
       );
     } else {
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          options: ['Delete', 'Cancel'],
-          destructiveButtonIndex: 0,
-          cancelButtonIndex: 1,
+          options: ['Edit Trip', 'Delete', 'Cancel'],
+          destructiveButtonIndex: 1,
+          cancelButtonIndex: 2,
         },
         (index) => {
-          if (index === 0) deleteTrip(trip.id);
+          if (index === 0) openEdit(trip);
+          if (index === 1) deleteTrip(trip.id);
         },
       );
     }
@@ -190,7 +241,7 @@ export default function MyTripsScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ gap: 16, paddingBottom: 40, paddingTop: 60 }}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ gap: 16, paddingBottom: 40, paddingTop: 60 }} showsVerticalScrollIndicator={false}>
         <ThemedText type="title" style={{ marginBottom: 8 }}>My Shmoves</ThemedText>
         {/* Current Trip */}
         {currentTrips.length > 0 && (
@@ -265,6 +316,86 @@ export default function MyTripsScreen() {
           <ThemedText style={styles.placeholder}>No past trips yet.</ThemedText>
         )}
       </ScrollView>
+      <Modal visible={!!editingTrip} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setEditingTrip(null)}>
+        <View style={[styles.editRoot, { backgroundColor: colors.background }]}>
+          <View style={styles.editHeader}>
+            <Pressable onPress={() => setEditingTrip(null)} hitSlop={10}>
+              <ThemedText style={[styles.editCancel, { color: colors.icon }]}>Cancel</ThemedText>
+            </Pressable>
+            <ThemedText style={[styles.editTitle, { color: colors.text }]}>Edit Trip</ThemedText>
+            <Pressable
+              onPress={saveEdit}
+              disabled={editBusy}
+              style={[styles.editSaveBtn, { backgroundColor: colors.primary, opacity: editBusy ? 0.6 : 1 }]}
+            >
+              <ThemedText style={styles.editSaveBtnText}>Save</ThemedText>
+            </Pressable>
+          </View>
+
+          <ScrollView contentContainerStyle={styles.editScroll} keyboardShouldPersistTaps="handled">
+            <ThemedText style={[styles.editLabel, { color: colors.icon }]}>Destination</ThemedText>
+            <TextInput
+              value={editDestination}
+              onChangeText={setEditDestination}
+              placeholder="Where are you going?"
+              placeholderTextColor={colors.icon}
+              style={[styles.editInput, { color: colors.inputText, borderColor: colors.border, backgroundColor: colors.surface }]}
+            />
+
+            <ThemedText style={[styles.editLabel, { color: colors.icon }]}>Start Date</ThemedText>
+            <Pressable
+              onPress={() => setEditStartPickerVisible(true)}
+              style={[styles.editDateBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}
+            >
+              <ThemedText style={{ color: colors.text }}>
+                {editStartDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+              </ThemedText>
+            </Pressable>
+
+            <ThemedText style={[styles.editLabel, { color: colors.icon }]}>End Date</ThemedText>
+            <Pressable
+              onPress={() => setEditEndPickerVisible(true)}
+              style={[styles.editDateBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}
+            >
+              <ThemedText style={{ color: colors.text }}>
+                {editEndDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+              </ThemedText>
+            </Pressable>
+          </ScrollView>
+
+          <Modal visible={editStartPickerVisible} transparent animationType="fade" onRequestClose={() => setEditStartPickerVisible(false)}>
+            <Pressable style={styles.pickerBackdrop} onPress={() => setEditStartPickerVisible(false)}>
+              <View style={[styles.pickerSheet, { backgroundColor: colors.surface }]}>
+                <DateTimePicker
+                  value={editStartDate}
+                  mode="date"
+                  display="spinner"
+                  onChange={(_, d) => { if (d) setEditStartDate(d); }}
+                />
+                <Pressable onPress={() => setEditStartPickerVisible(false)} style={[styles.pickerDone, { backgroundColor: colors.primary }]}>
+                  <ThemedText style={styles.pickerDoneText}>Done</ThemedText>
+                </Pressable>
+              </View>
+            </Pressable>
+          </Modal>
+
+          <Modal visible={editEndPickerVisible} transparent animationType="fade" onRequestClose={() => setEditEndPickerVisible(false)}>
+            <Pressable style={styles.pickerBackdrop} onPress={() => setEditEndPickerVisible(false)}>
+              <View style={[styles.pickerSheet, { backgroundColor: colors.surface }]}>
+                <DateTimePicker
+                  value={editEndDate}
+                  mode="date"
+                  display="spinner"
+                  onChange={(_, d) => { if (d) setEditEndDate(d); }}
+                />
+                <Pressable onPress={() => setEditEndPickerVisible(false)} style={[styles.pickerDone, { backgroundColor: colors.primary }]}>
+                  <ThemedText style={styles.pickerDoneText}>Done</ThemedText>
+                </Pressable>
+              </View>
+            </Pressable>
+          </Modal>
+        </View>
+      </Modal>
     </ThemedView>
   );
 }
@@ -343,4 +474,56 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+
+  editRoot: { flex: 1 },
+  editHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 20,
+    paddingBottom: 12,
+  },
+  editTitle: { fontSize: 18, fontWeight: '800' },
+  editCancel: { fontSize: 15, fontWeight: '600' },
+  editSaveBtn: {
+    minWidth: 64,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 100,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editSaveBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  editScroll: { padding: 20, gap: 6 },
+  editLabel: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 12, marginBottom: 4 },
+  editInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 16,
+  },
+  editDateBtn: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+  },
+  pickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  pickerSheet: {
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    padding: 16,
+    paddingBottom: 32,
+  },
+  pickerDone: {
+    marginTop: 8,
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+  },
+  pickerDoneText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 });
