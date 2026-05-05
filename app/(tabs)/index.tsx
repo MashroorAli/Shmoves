@@ -145,7 +145,7 @@ export default function HomeScreen() {
           />
           {!!showCityDropdown && photonResults.length > 0 && (
             <View style={[styles.cityDropdown, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <ScrollView style={{ maxHeight: 200 }} keyboardShouldPersistTaps="handled">
+              <ScrollView style={{ maxHeight: 200 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                 {photonResults.map((city: string) => (
                   <Pressable
                     key={city}

@@ -33,6 +33,8 @@ const MAPPING = {
   'photo': 'image',
   'camera.fill': 'photo-camera',
   'briefcase.fill': 'work',
+  'rectangle.grid.2x2': 'grid-view',
+  'list.bullet': 'format-list-bulleted',
 } as IconMapping;
 
 /**

@@ -14,15 +14,20 @@ function syncItineraryToRange(existing: ItineraryDay[], startDate: string, endDa
   );
 
   const existingByDate = new Map(existing.map((d) => [d.date, d]));
+  const DEFAULT_LABEL = /^Day \d+$/;
 
-  return allDates.map((date, i) =>
-    existingByDate.get(date) ?? {
+  return allDates.map((date, i) => {
+    const found = existingByDate.get(date);
+    if (found) {
+      return DEFAULT_LABEL.test(found.label) ? { ...found, label: `Day ${i + 1}` } : found;
+    }
+    return {
       id: `day-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${i}`,
       label: `Day ${i + 1}`,
       date,
       events: [],
-    },
-  );
+    };
+  });
 }
 
 export interface Trip {

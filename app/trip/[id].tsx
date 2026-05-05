@@ -40,6 +40,7 @@ import RNAnimated, {
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { TripInviteSheet } from '@/components/trip-invite-sheet';
 import { TripPrivacyCard } from '@/components/trip-privacy-card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { CURRENCIES, CURRENCY_SYMBOLS, inferDestinationCurrency } from '@/constants/currencies';
@@ -149,6 +150,7 @@ export default function TripDetailsScreen() {
     migrateToShared,
     inviteToTrip,
     inviteByUsername,
+    inviteByUserId,
     addSharedFlight,
     updateSharedFlight,
     deleteSharedFlight,
@@ -978,6 +980,7 @@ export default function TripDetailsScreen() {
   });
 
   const [isInviting, setIsInviting] = useState(false);
+  const [inviteSheetVisible, setInviteSheetVisible] = useState(false);
 
   type WeatherData = { tempC: number; description: string; emoji: string; windKph: number };
   const [weatherData, setWeatherData] = useState<WeatherData | null>(null);
@@ -1092,24 +1095,12 @@ export default function TripDetailsScreen() {
 
   const handleInvitePress = () => {
     if (!tripId || !trip) return;
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options: ['Invite by Username', 'Share Invite Link', 'Cancel'],
-          cancelButtonIndex: 2,
-        },
-        (index) => {
-          if (index === 0) handleInviteByUsername();
-          else if (index === 1) handleShareLink();
-        },
-      );
-    } else {
-      Alert.alert('Invite', 'Choose an option', [
-        { text: 'Invite by Username', onPress: handleInviteByUsername },
-        { text: 'Share Invite Link', onPress: handleShareLink },
-        { text: 'Cancel', style: 'cancel' },
-      ]);
-    }
+    setInviteSheetVisible(true);
+  };
+
+  const handleInviteById = async (targetUserId: string) => {
+    const sharedId = await ensureSharedTrip();
+    await inviteByUserId(sharedId, targetUserId);
   };
 
   const openHousingModal = () => {
@@ -5036,6 +5027,14 @@ export default function TripDetailsScreen() {
       {/* Tips that anchor to elements outside the modal render here. */}
       {!isModalTip(ITINERARY_TIPS[displayedTipIndex]?.target) && renderTipBubble()}
       {renderOverviewTipBubble()}
+
+      <TripInviteSheet
+        visible={inviteSheetVisible}
+        onClose={() => setInviteSheetVisible(false)}
+        existingMemberIds={new Set(sharedTrip?.members.map((m) => m.userId) ?? [])}
+        onInviteById={handleInviteById}
+        onShareLink={handleShareLink}
+      />
 
     </ThemedView>
   );

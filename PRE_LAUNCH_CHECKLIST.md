@@ -1,16 +1,16 @@
 # Shmoves — Pre-Launch Checklist
 
 ## 🔐 Auth & Security
-- [ ] Replace phone/SMS auth (Twilio) with Apple Sign In + Email OTP
-- [ ] Enable Apple provider in Supabase (Auth → Providers)
-- [ ] Enable Email OTP provider in Supabase (Auth → Providers)
-- [ ] Disable Phone provider in Supabase (Auth → Providers)
-- [ ] Register App ID in Apple Developer Portal with "Sign in with Apple" capability
-- [ ] Install and configure `expo-apple-authentication`
-- [ ] Implement `expo-secure-store` for encrypted token storage (replace AsyncStorage for auth tokens)
+- [x] Replace phone/SMS auth (Twilio) with Apple Sign In + Email OTP
+- [x] Enable Apple provider in Supabase (Auth → Providers)
+- [x] Enable Email OTP provider in Supabase (Auth → Providers)
+- [x] Disable Phone provider in Supabase (Auth → Providers)
+- [x] Register App ID in Apple Developer Portal with "Sign in with Apple" capability
+- [x] Install and configure `expo-apple-authentication`
+- [x] Implement `expo-secure-store` for encrypted token storage (replace AsyncStorage for auth tokens)
 
 ## 📱 App Store Setup
-- [ ] Update bundle ID from `com.tripplanner.app` → `com.shmoves.app` in `app.json`
+- [x] Update bundle ID from `com.tripplanner.app` → `com.shmoves.app` in `app.json`
 - [ ] Register new App ID `com.shmoves.app` in Apple Developer Portal
 - [ ] Set up EAS Build (`eas build:configure`)
 - [ ] Create development build (required for Apple Sign In testing — won't work in Expo Go)
@@ -21,8 +21,8 @@
 - [ ] Submit for App Store review
 
 ## ⚖️ Legal
-- [ ] Set up real contact email for Terms & Privacy Policy (buy `shmoves.app` domain or use Google Workspace)
-- [ ] Update `docs/terms.html` and `docs/privacy.html` with real contact email
+- [x] Set up real contact email for Terms & Privacy Policy (buy `shmoves.app` domain or use Google Workspace)
+- [x] Update `docs/terms.html` and `docs/privacy.html` with real contact email
 - [ ] Have a lawyer review Terms of Service and Privacy Policy before launch
 
 ## 🗄️ Database & Backend
@@ -33,15 +33,15 @@
 - [ ] Verify Pexels API key is valid and has sufficient quota
 
 ## 🎨 UI / UX Polish
-- [ ] Fix image API (Pexels) — verify key and quota
-- [ ] Implement native iPhone action sheet for photo picker (camera/library) on onboarding and profile
+- [x] Fix image API (Pexels) — verify key and quota
+- [x] Implement native iPhone action sheet for photo picker (camera/library) on onboarding and profile
 - [ ] Test onboarding flow end-to-end on a real device
 - [ ] Test profile photo upload on a real device
 - [ ] Verify Terms & Privacy Policy links open correctly from auth screen
 
 ## 📦 Dependencies & Code
-- [ ] Run `npm audit` and fix any high/critical vulnerabilities
-- [ ] Remove any `console.log` statements that log personal data (phone, name, email)
+- [x] Run `npm audit` and fix any high/critical vulnerabilities
+- [x] Remove any `console.log` statements that log personal data (phone, name, email)
 - [ ] Test app on both light and dark mode
 - [ ] Test on multiple iPhone sizes (SE, 14, 14 Pro Max)
 

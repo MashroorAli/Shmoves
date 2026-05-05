@@ -419,6 +419,7 @@ const styles = StyleSheet.create({
   heading: {
     fontSize: 30,
     fontWeight: '800',
+    lineHeight: 38,
   },
   subtext: {
     fontSize: 15,

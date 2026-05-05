@@ -24,15 +24,20 @@ function syncItineraryToRange(existing: ItineraryDay[], startDate: string, endDa
   );
 
   const existingByDate = new Map(existing.map((d) => [d.date, d]));
+  const DEFAULT_LABEL = /^Day \d+$/;
 
-  return allDates.map((date, i) =>
-    existingByDate.get(date) ?? {
+  return allDates.map((date, i) => {
+    const found = existingByDate.get(date);
+    if (found) {
+      return DEFAULT_LABEL.test(found.label) ? { ...found, label: `Day ${i + 1}` } : found;
+    }
+    return {
       id: `day-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${i}`,
       label: `Day ${i + 1}`,
       date,
       events: [],
-    },
-  );
+    };
+  });
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -119,6 +124,7 @@ interface SharedTripsContextValue {
 
   inviteToTrip: (sharedTripId: string) => Promise<string>;
   inviteByUsername: (sharedTripId: string, username: string) => Promise<void>;
+  inviteByUserId: (sharedTripId: string, targetUserId: string) => Promise<void>;
   resolveInviteToken: (token: string) => Promise<void>;
   deleteSharedTrip: (sharedTripId: string) => Promise<void>;
   leaveSharedTrip: (sharedTripId: string) => Promise<void>;
@@ -476,6 +482,31 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       await refresh();
     };
 
+    // ── Invite by user ID (direct invite, from friends list) ─────────────
+    const inviteByUserId = async (sharedTripId: string, targetUserId: string): Promise<void> => {
+      if (!userId) throw new Error('Not authenticated');
+      if (targetUserId === userId) throw new Error("You can't invite yourself.");
+
+      const { data: existing } = await supabase
+        .from('trip_members')
+        .select('id')
+        .eq('trip_id', sharedTripId)
+        .eq('user_id', targetUserId)
+        .maybeSingle();
+      if (existing) throw new Error('That user is already part of this trip.');
+
+      const { error } = await supabase.from('trip_members').insert({
+        trip_id: sharedTripId,
+        user_id: targetUserId,
+        role: 'member',
+        status: 'pending',
+        invited_by: userId,
+      });
+      if (error) throw error;
+
+      await refresh();
+    };
+
     // ── Resolve invite token (from deep link) ────────────────────────────
     const resolveInviteToken = async (token: string): Promise<void> => {
       if (!userId) throw new Error('Not authenticated');
@@ -822,6 +853,7 @@ export function SharedTripsProvider({ children, uid: userId }: { children: React
       migrateToShared,
       inviteToTrip,
       inviteByUsername,
+      inviteByUserId,
       resolveInviteToken,
       deleteSharedTrip,
       leaveSharedTrip,

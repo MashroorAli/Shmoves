@@ -1,3 +1,11 @@
+export const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: '$',  EUR: '€',  GBP: '£',  JPY: '¥',  CAD: 'CA$', AUD: 'A$',
+  CHF: 'Fr', CNY: '¥',  INR: '₹',  MXN: '$',  BRL: 'R$',  KRW: '₩',
+  SGD: 'S$', HKD: 'HK$',NOK: 'kr', SEK: 'kr', DKK: 'kr',  NZD: 'NZ$',
+  ZAR: 'R',  AED: 'د.إ',SAR: '﷼', THB: '฿',  MYR: 'RM',  IDR: 'Rp',
+  PHP: '₱',  PLN: 'zł', TRY: '₺',  EGP: 'E£', COP: '$',   ARS: '$',
+};
+
 export const CURRENCIES = [
   { code: 'USD', name: 'US Dollar' },
   { code: 'EUR', name: 'Euro' },
