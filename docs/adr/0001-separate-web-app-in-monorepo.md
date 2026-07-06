@@ -21,5 +21,5 @@ Sync comes free because both clients talk to the same Supabase backend.
 - Web gets a purpose-built desktop experience (wide layouts, hover, SEO).
 - Features are built twice (mobile UI + web UI), but logic is written once in `packages/core`.
 - Finance math is shared, so balances can never drift between platforms.
-- One-time cost: repo restructure, workspace setup (Turborepo or npm workspaces).
+- One-time cost: repo restructure, workspace setup. Decided 2026-07-06: npm workspaces — zero new tooling at this scale; revisit Turborepo if build caching ever matters.
 - Expo + Next.js in one workspace can have dependency squabbles. Accepted.

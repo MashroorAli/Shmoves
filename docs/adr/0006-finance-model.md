@@ -17,6 +17,7 @@ Splitwise owns 1–3 looking backward. Nobody does 4 well.
 ## Decision
 
 - Design the schema for levels 1–4 now: `expenses`, `expense_splits` (one row per person per expense), `estimated_cost` + `cost_type` on plannable items.
+- Multi-currency carries over: expenses and estimated costs store a `currency` code. The app already does per-expense currencies with home-currency conversion (cached exchange rates); the finance math in `packages/core` must take currency into account rather than assuming a single unit.
 - Build levels 1–3 for launch.
 - Level 4 is the differentiator, fleshed out after launch. Core mechanic: a live "estimated trip cost as of right now" ticker that grows as the itinerary fills in. It's a SUM over estimated costs; per-person is a divide. In a live group session it's a social object ("this hotel just made the trip $200/person more").
 - Level 5 is a link-out to Venmo at most. No payment integrations.

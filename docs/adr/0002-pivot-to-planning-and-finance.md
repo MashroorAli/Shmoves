@@ -10,6 +10,8 @@ Shmoves was planning + photos + social — three products in one. Mash wants to 
 
 Remove photos, journal, and the activity feed entirely from the app. Do not build them on web. The product is group trip planning + trip finance.
 
+This includes the entire "Shmovements" social system (decided 2026-07-06): the `friendships`, `trip_posts`, `post_likes`, and `post_comments` tables, `social-context`, and the activity tab. Tables are dropped in Phase 0; UI is removed in Phase 1. Recoverable from git history.
+
 Feature split across surfaces:
 
 - **Web:** trip create/edit, flights, itinerary, housing, expenses, documents, invites, live shared view.
@@ -21,4 +23,4 @@ Feature split across surfaces:
 - Sharper product story, less code to maintain going into a two-frontend world.
 - Removed features are recoverable from git history if ever missed.
 - Courtesy: warn existing users before deleting any uploaded photos (Cloudinary).
-- Don't rewrite contexts for features being deleted — fold removal into the backend refactor (ADR 0009).
+- Don't rewrite contexts for features being deleted — fold removal into the backend refactor (ADR 0008, Phase 0).

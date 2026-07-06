@@ -20,6 +20,13 @@ Required in a `.env` file at the project root:
 - `EXPO_PUBLIC_SUPABASE_URL`
 - `EXPO_PUBLIC_SUPABASE_ANON_KEY`
 
+## Current Status (July 2026)
+
+We are executing a major refactor. Architecture decisions live in
+docs/adr/ — read all ADRs before making structural changes.
+The "Data Model" section below describes the PRE-refactor state
+that Phase 0 (see ADR 0008) is replacing.
+
 ## Architecture
 
 ### Routing
