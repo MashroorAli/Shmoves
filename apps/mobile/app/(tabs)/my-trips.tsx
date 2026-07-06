@@ -8,21 +8,27 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/context/auth-context';
-import { useSharedTrips } from '@/context/shared-trips-context';
-import { type Trip, useTrips } from '@/context/trips-context';
+import { useTrips } from '@/context/trips-context';
 import { useColors } from '@/hooks/use-colors';
+
+// Card view model derived from a TripBundle: every trip is the same shape
+// now; "shared" just means more than one accepted member.
+type TripCard = {
+  id: string;
+  destination: string;
+  startDate: string | null;
+  endDate: string | null;
+  isShared: boolean;
+  isOwner: boolean;
+};
 
 export default function MyTripsScreen() {
   const router = useRouter();
   const { uid } = useAuth();
-  const { trips, deleteTrip, updateTrip } = useTrips();
-  const { sharedTrips, pendingInvites, acceptInvite, declineInvite, deleteSharedTrip, leaveSharedTrip, updateSharedTripDetails } = useSharedTrips();
+  const { trips, deleteTrip, leaveTrip, updateTrip, pendingInvites, acceptInvite, declineInvite } = useTrips();
   const colors = useColors();
 
-
-  type MergedTrip = Trip & { isShared?: boolean; sharedTripId?: string };
-  type EditingTrip = { trip: MergedTrip; isShared: boolean };
-  const [editingTrip, setEditingTrip] = useState<EditingTrip | null>(null);
+  const [editingTrip, setEditingTrip] = useState<TripCard | null>(null);
   const [editDestination, setEditDestination] = useState('');
   const [editStartDate, setEditStartDate] = useState<Date>(new Date());
   const [editEndDate, setEditEndDate] = useState<Date>(new Date());
@@ -33,13 +39,13 @@ export default function MyTripsScreen() {
   const toLocalIsoDate = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-  const openEdit = (trip: MergedTrip) => {
-    const start = parseLocalDate(trip.startDate) ?? new Date();
-    const end = parseLocalDate(trip.endDate) ?? new Date();
+  const openEdit = (trip: TripCard) => {
+    const start = parseLocalDate(trip.startDate ?? undefined) ?? new Date();
+    const end = parseLocalDate(trip.endDate ?? undefined) ?? new Date();
     setEditDestination(trip.destination);
     setEditStartDate(start);
     setEditEndDate(end);
-    setEditingTrip({ trip, isShared: !!trip.isShared });
+    setEditingTrip(trip);
   };
 
   const saveEdit = async () => {
@@ -48,16 +54,11 @@ export default function MyTripsScreen() {
     if (!destination) { Alert.alert('Missing destination', 'Please enter a destination.'); return; }
     setEditBusy(true);
     try {
-      const updates = {
+      await updateTrip(editingTrip.id, {
         destination,
         startDate: toLocalIsoDate(editStartDate),
         endDate: toLocalIsoDate(editEndDate),
-      };
-      if (editingTrip.isShared && editingTrip.trip.sharedTripId) {
-        await updateSharedTripDetails(editingTrip.trip.sharedTripId, updates);
-      } else {
-        updateTrip(editingTrip.trip.id, updates);
-      }
+      });
       setEditingTrip(null);
     } catch (e: any) {
       Alert.alert('Error', e.message || 'Could not save changes.');
@@ -100,46 +101,42 @@ export default function MyTripsScreen() {
     return `${startMonth} ${startYear} - ${endMonth} ${endYear}`;
   };
 
-  const handleTripPress = (trip: Trip) => {
+  const handleTripPress = (trip: TripCard) => {
     router.push({
       pathname: '/trip/[id]',
       params: {
         id: trip.id,
         destination: trip.destination,
-        startDate: trip.startDate,
-        endDate: trip.endDate,
+        startDate: trip.startDate ?? '',
+        endDate: trip.endDate ?? '',
       },
     });
   };
-
-  // Merge personal trips and shared trips into a single list
 
   const { currentTrips, upcomingTrips, pastTrips, daysUntilNext } = useMemo(() => {
     const today = new Date();
     const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
-    // Personal trips (exclude ones that have been migrated to shared)
-    const sharedTripIds = new Set(sharedTrips.map((st) => st.trip.id));
-    const personalTrips: MergedTrip[] = trips
-      .filter((t) => !sharedTripIds.has(t.id))
-      .map((t) => ({ ...t }));
+    const allTrips: TripCard[] = trips.map((b) => {
+      const acceptedCount = b.members.filter((m) => m.status === 'accepted').length;
+      const me = b.members.find((m) => m.userId === uid);
+      return {
+        id: b.trip.id,
+        destination: b.trip.destination,
+        startDate: b.trip.startDate,
+        endDate: b.trip.endDate,
+        isShared: acceptedCount > 1,
+        isOwner: me?.role === 'owner',
+      };
+    });
 
-    // Shared trips
-    const shared: MergedTrip[] = sharedTrips.map((st) => ({
-      ...st.trip,
-      isShared: true,
-      sharedTripId: st.id,
-    }));
-
-    const allTrips = [...personalTrips, ...shared];
-
-    const current: MergedTrip[] = [];
-    const upcoming: MergedTrip[] = [];
-    const past: MergedTrip[] = [];
+    const current: TripCard[] = [];
+    const upcoming: TripCard[] = [];
+    const past: TripCard[] = [];
 
     for (const trip of allTrips) {
-      const start = parseLocalDate(trip.startDate);
-      const end = parseLocalDate(trip.endDate);
+      const start = parseLocalDate(trip.startDate ?? undefined);
+      const end = parseLocalDate(trip.endDate ?? undefined);
       if (end && end.getTime() < todayStart.getTime()) {
         past.push(trip);
       } else if (start && start.getTime() <= todayStart.getTime()) {
@@ -150,18 +147,18 @@ export default function MyTripsScreen() {
     }
 
     upcoming.sort((a, b) => {
-      const aStart = parseLocalDate(a.startDate)?.getTime() ?? 0;
-      const bStart = parseLocalDate(b.startDate)?.getTime() ?? 0;
+      const aStart = parseLocalDate(a.startDate ?? undefined)?.getTime() ?? 0;
+      const bStart = parseLocalDate(b.startDate ?? undefined)?.getTime() ?? 0;
       return aStart - bStart;
     });
 
     past.sort((a, b) => {
-      const aEnd = parseLocalDate(a.endDate)?.getTime() ?? 0;
-      const bEnd = parseLocalDate(b.endDate)?.getTime() ?? 0;
+      const aEnd = parseLocalDate(a.endDate ?? undefined)?.getTime() ?? 0;
+      const bEnd = parseLocalDate(b.endDate ?? undefined)?.getTime() ?? 0;
       return bEnd - aEnd;
     });
 
-    const nextStart = upcoming[0] ? parseLocalDate(upcoming[0].startDate) : undefined;
+    const nextStart = upcoming[0] ? parseLocalDate(upcoming[0].startDate ?? undefined) : undefined;
     let daysUntilNext: number | null = null;
     if (nextStart) {
       const diff = nextStart.getTime() - todayStart.getTime();
@@ -169,42 +166,12 @@ export default function MyTripsScreen() {
     }
 
     return { currentTrips: current, upcomingTrips: upcoming, pastTrips: past, daysUntilNext };
-  }, [trips, sharedTrips]);
+  }, [trips, uid]);
 
-  const handleTripOptions = (trip: MergedTrip) => {
+  const handleTripOptions = (trip: TripCard) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    if (trip.isShared && trip.sharedTripId) {
-      const sharedData = sharedTrips.find((st) => st.id === trip.sharedTripId);
-      const isOwner = sharedData?.ownerId === uid;
-
-      const options = isOwner
-        ? ['Edit Trip', 'Delete', 'Cancel']
-        : ['Leave', 'Cancel'];
-      const destructiveIndex = isOwner ? 1 : 0;
-      const cancelIndex = isOwner ? 2 : 1;
-
-      ActionSheetIOS.showActionSheetWithOptions(
-        { options, destructiveButtonIndex: destructiveIndex, cancelButtonIndex: cancelIndex },
-        (index) => {
-          if (isOwner) {
-            if (index === 0) openEdit(trip);
-            if (index === 1) {
-              Alert.alert(
-                'Delete Trip?',
-                'This will permanently delete the trip for everyone in the group.',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Delete', style: 'destructive', onPress: async () => { await deleteSharedTrip(trip.sharedTripId!); await deleteTrip(trip.id); } },
-                ],
-              );
-            }
-          } else {
-            if (index === 0) leaveSharedTrip(trip.sharedTripId!);
-          }
-        },
-      );
-    } else {
+    if (trip.isOwner) {
       ActionSheetIOS.showActionSheetWithOptions(
         {
           options: ['Edit Trip', 'Delete', 'Cancel'],
@@ -213,15 +180,30 @@ export default function MyTripsScreen() {
         },
         (index) => {
           if (index === 0) openEdit(trip);
-          if (index === 1) deleteTrip(trip.id);
+          if (index === 1) {
+            const message = trip.isShared
+              ? 'This will permanently delete the trip for everyone in the group.'
+              : 'This will permanently delete the trip.';
+            Alert.alert('Delete Trip?', message, [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Delete', style: 'destructive', onPress: () => deleteTrip(trip.id) },
+            ]);
+          }
+        },
+      );
+    } else {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ['Leave', 'Cancel'], destructiveButtonIndex: 0, cancelButtonIndex: 1 },
+        (index) => {
+          if (index === 0) leaveTrip(trip.id);
         },
       );
     }
   };
 
-  const renderTripCard = (trip: MergedTrip) => (
+  const renderTripCard = (trip: TripCard) => (
     <Pressable
-      key={trip.sharedTripId ?? trip.id}
+      key={trip.id}
       style={[styles.tripCard, { borderColor: colors.border, backgroundColor: colors.surface }]}
       onPress={() => handleTripPress(trip)}>
       <View style={styles.tripCardTopRow}>
@@ -235,7 +217,7 @@ export default function MyTripsScreen() {
           <IconSymbol name="ellipsis" size={18} color={colors.icon} />
         </Pressable>
       </View>
-      <ThemedText style={styles.tripDates}>{formatTripMonthRange(trip.startDate, trip.endDate)}</ThemedText>
+      <ThemedText style={styles.tripDates}>{formatTripMonthRange(trip.startDate ?? undefined, trip.endDate ?? undefined)}</ThemedText>
     </Pressable>
   );
 
@@ -262,11 +244,11 @@ export default function MyTripsScreen() {
                 <View style={{ flex: 1 }}>
                   <ThemedText style={styles.tripDestination}>{invite.destination}</ThemedText>
                   <ThemedText style={styles.tripDates}>
-                    {formatTripMonthRange(invite.startDate, invite.endDate)}
+                    {formatTripMonthRange(invite.startDate ?? undefined, invite.endDate ?? undefined)}
                   </ThemedText>
-                  {invite.inviterName || invite.inviterPhone ? (
+                  {invite.inviterName ? (
                     <ThemedText style={[styles.inviteFrom, { color: colors.icon }]}>
-                      Invited by {invite.inviterName || invite.inviterPhone}
+                      Invited by {invite.inviterName}
                     </ThemedText>
                   ) : null}
                 </View>
@@ -300,7 +282,7 @@ export default function MyTripsScreen() {
 
         {upcomingTrips.length > 0 ? (
           upcomingTrips.map(renderTripCard)
-        ) : trips.length === 0 && sharedTrips.length === 0 && currentTrips.length === 0 ? (
+        ) : trips.length === 0 && currentTrips.length === 0 ? (
           <ThemedText style={styles.placeholder}>Your saved trips will appear here.</ThemedText>
         ) : upcomingTrips.length === 0 ? (
           <ThemedText style={styles.placeholder}>No upcoming trips.</ThemedText>

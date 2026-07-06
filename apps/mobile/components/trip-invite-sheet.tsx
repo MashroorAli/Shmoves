@@ -13,8 +13,30 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { type ProfileSummary, useSocial } from '@/context/social-context';
+import { supabase } from '@/config/supabase';
 import { useColors } from '@/hooks/use-colors';
+
+interface ProfileSummary {
+  id: string;
+  name: string | null;
+  username: string | null;
+  avatarUrl: string | null;
+}
+
+async function searchProfiles(query: string): Promise<ProfileSummary[]> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, name, username, avatar_url')
+    .ilike('username', `%${query.trim()}%`)
+    .limit(20);
+  if (error) throw error;
+  return (data ?? []).map((r) => ({
+    id: r.id,
+    name: r.name ?? null,
+    username: r.username ?? null,
+    avatarUrl: r.avatar_url ?? null,
+  }));
+}
 
 interface Props {
   visible: boolean;
@@ -27,7 +49,6 @@ interface Props {
 export function TripInviteSheet({ visible, onClose, existingMemberIds, onInviteById, onShareLink }: Props) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { friends, searchProfiles } = useSocial();
 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<ProfileSummary[]>([]);
@@ -52,12 +73,14 @@ export function TripInviteSheet({ visible, onClose, existingMemberIds, onInviteB
       try {
         const r = await searchProfiles(query);
         setResults(r);
+      } catch {
+        setResults([]);
       } finally {
         setSearching(false);
       }
     }, 250);
     return () => clearTimeout(timer);
-  }, [query, searchProfiles]);
+  }, [query]);
 
   const handleInvite = useCallback(async (profile: ProfileSummary) => {
     if (busyId || invitedIds.has(profile.id) || existingMemberIds.has(profile.id)) return;
@@ -77,13 +100,8 @@ export function TripInviteSheet({ visible, onClose, existingMemberIds, onInviteB
     try { await onShareLink(); } finally { setLinkBusy(false); }
   };
 
-  const eligibleFriends = useMemo(
-    () => friends.filter((f) => !existingMemberIds.has(f.id) && !invitedIds.has(f.id)),
-    [friends, existingMemberIds, invitedIds],
-  );
-
   const isSearching = query.trim().length > 0;
-  const listData: ProfileSummary[] = isSearching ? results : eligibleFriends;
+  const listData: ProfileSummary[] = isSearching ? results : [];
 
   const renderRow = useCallback((profile: ProfileSummary) => {
     const inTrip = existingMemberIds.has(profile.id);
@@ -173,19 +191,9 @@ export function TripInviteSheet({ visible, onClose, existingMemberIds, onInviteB
                 <ThemedText style={[styles.emptyText, { color: colors.icon }]}>No users found.</ThemedText>
               ) : null
             ) : (
-              <View>
-                <ThemedText style={[styles.sectionLabel, { color: colors.icon }]}>Friends</ThemedText>
-                {friends.length === 0 && (
-                  <ThemedText style={[styles.emptyText, { color: colors.icon }]}>
-                    Add friends on Shmovements to invite them here.
-                  </ThemedText>
-                )}
-                {friends.length > 0 && eligibleFriends.length === 0 && (
-                  <ThemedText style={[styles.emptyText, { color: colors.icon }]}>
-                    All your friends are already in this trip.
-                  </ThemedText>
-                )}
-              </View>
+              <ThemedText style={[styles.emptyText, { color: colors.icon }]}>
+                Search for people by username to invite them.
+              </ThemedText>
             )
           }
           renderItem={({ item }) => renderRow(item)}

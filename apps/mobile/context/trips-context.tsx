@@ -1,722 +1,452 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+// Unified trips context (ADR 0003): every trip — personal or group — is a
+// TripBundle from the normalized schema, fetched and mutated through
+// @shmoves/core. Replaces the old trips-context (user_data blob) and
+// shared-trips-context (shared_trips JSON columns).
+//
+// Sync model (ADR 0005): mutations write to Supabase then update local state
+// optimistically; a debounced refresh() runs on any realtime event, on app
+// foreground, and on channel reconnect as the reliability backstop.
+
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { AppState } from 'react-native';
 
 import { supabase } from '@/config/supabase';
+import {
+  acceptInvite as coreAcceptInvite,
+  addExpense as coreAddExpense,
+  addFlight as coreAddFlight,
+  addHousing as coreAddHousing,
+  addItineraryDay as coreAddItineraryDay,
+  addItineraryItem as coreAddItineraryItem,
+  createInviteToken,
+  createTrip,
+  declineInvite as coreDeclineInvite,
+  deleteExpense as coreDeleteExpense,
+  deleteFlight as coreDeleteFlight,
+  deleteHousing as coreDeleteHousing,
+  deleteItineraryDay as coreDeleteItineraryDay,
+  deleteItineraryItem as coreDeleteItineraryItem,
+  deleteTrip as coreDeleteTrip,
+  clearFlights as coreClearFlights,
+  fetchAllTrips,
+  inviteByUserId as coreInviteByUserId,
+  inviteByUsername as coreInviteByUsername,
+  leaveTrip as coreLeaveTrip,
+  markSettled as coreMarkSettled,
+  replaceItinerary,
+  resolveInviteToken as coreResolveInviteToken,
+  unmarkSettled as coreUnmarkSettled,
+  updateExpense as coreUpdateExpense,
+  updateFlight as coreUpdateFlight,
+  updateItineraryDay as coreUpdateItineraryDay,
+  updateItineraryItem as coreUpdateItineraryItem,
+  updateTripDetails,
+  type ExpenseInput,
+  type FlightInput,
+  type HousingInput,
+  type ItineraryItem,
+  type ItineraryItemInput,
+  type PendingInvite,
+  type Trip,
+  type TripBundle,
+  type TripInput,
+} from '@shmoves/core';
 
-function syncItineraryToRange(existing: ItineraryDay[], startDate: string, endDate: string): ItineraryDay[] {
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return existing;
-
-  const msPerDay = 86400000;
-  const totalDays = Math.round((end.getTime() - start.getTime()) / msPerDay) + 1;
-  const allDates: string[] = Array.from({ length: totalDays }, (_, i) =>
-    new Date(start.getTime() + i * msPerDay).toISOString().slice(0, 10),
-  );
-
-  const existingByDate = new Map(existing.map((d) => [d.date, d]));
-  const DEFAULT_LABEL = /^Day \d+$/;
-
-  return allDates.map((date, i) => {
-    const found = existingByDate.get(date);
-    if (found) {
-      return DEFAULT_LABEL.test(found.label) ? { ...found, label: `Day ${i + 1}` } : found;
-    }
-    return {
-      id: `day-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${i}`,
-      label: `Day ${i + 1}`,
-      date,
-      events: [],
-    };
-  });
-}
-
-export interface Trip {
-  id: string;
-  destination: string;
-  startDate: string;
-  endDate: string;
-  isPublic?: boolean;
-}
-
-export interface TicketAttachment {
-  id: string;
-  name: string;
-  url: string;
-  type: 'pdf' | 'image';
-}
-
-export interface ItineraryEvent {
-  id: string;
-  name: string;
-  time: string;
-  endTime?: string;
-  location?: string;
-  notes?: string;
-  tickets?: TicketAttachment[];
-}
-
-export interface ItineraryDay {
-  id: string;
-  label: string;
-  date: string;
-  events: ItineraryEvent[];
-}
-
-export interface FlightInfo {
-  id: string;
-  segment?: 'auto' | 'going' | 'mid' | 'return';
-  departureDate: string;
-  departureTime: string;
-  arrivalDate?: string;
-  arrivalTime?: string;
-  airline?: string;
-  flightNumber?: string;
-  from?: string;
-  fromCity?: string;
-  to?: string;
-  toCity?: string;
-}
-
-export interface TripExpense {
-  id: string;
-  name: string;
-  amount: number;
-  currency: string;
-  isSplit: boolean;
-  splitType?: 'even';
-  splitWith?: string[];
-  createdBy?: string;
-  paidBy?: string;
-  createdAt: string;
-}
-
-export interface TripHousing {
-  id: string;
-  location: string;
-  startDate: string;
-  endDate: string;
-  checkInTime?: string;
-  checkOutTime?: string;
-  earlyCheckInRequested?: boolean;
-}
-
-export interface JournalEntry {
-  id: string;
-  date: string;
-  text: string;
-  isShared?: boolean;
-  authorId?: string;
-}
+export type {
+  Expense,
+  ExpenseInput,
+  ExpenseSplit,
+  ExpenseWithSplits,
+  Flight,
+  FlightInput,
+  Housing,
+  HousingInput,
+  ItineraryDay,
+  ItineraryDayWithItems,
+  ItineraryItem,
+  ItineraryItemInput,
+  PendingInvite,
+  Settlement,
+  TicketAttachment,
+  Trip,
+  TripBundle,
+  TripMember,
+} from '@shmoves/core';
 
 interface TripsContextValue {
-  trips: Trip[];
-  addTrip: (trip: Omit<Trip, 'id'>) => Trip;
-  updateTrip: (tripId: string, updates: { destination: string; startDate: string; endDate: string }) => Trip;
+  trips: TripBundle[];
+  pendingInvites: PendingInvite[];
+  isLoading: boolean;
+  refresh: () => Promise<void>;
+
+  addTrip: (input: TripInput) => Promise<Trip>;
+  updateTrip: (tripId: string, input: TripInput) => Promise<void>;
   deleteTrip: (tripId: string) => Promise<void>;
-  setTripPublic: (tripId: string, isPublic: boolean) => void;
-  flightsByTripId: Record<string, FlightInfo[]>;
-  addFlight: (tripId: string, flight: Omit<FlightInfo, 'id'>) => FlightInfo;
-  updateFlight: (tripId: string, flightId: string, flight: Omit<FlightInfo, 'id'>) => void;
-  deleteFlight: (tripId: string, flightId: string) => void;
-  clearFlights: (tripId: string) => void;
-  itineraryByTripId: Record<string, ItineraryDay[]>;
-  addItineraryDay: (tripId: string, label: string, date: string) => ItineraryDay;
-  addItineraryEvent: (tripId: string, dayId: string, name: string, time: string, location?: string, notes?: string, tickets?: TicketAttachment[], endTime?: string) => ItineraryEvent;
-  updateItineraryDay: (tripId: string, dayId: string, label: string) => void;
-  deleteItineraryDay: (tripId: string, dayId: string) => void;
-  updateItineraryEvent: (
+  leaveTrip: (tripId: string) => Promise<void>;
+
+  acceptInvite: (tripId: string) => Promise<void>;
+  declineInvite: (tripId: string) => Promise<void>;
+  inviteToTrip: (tripId: string) => Promise<string>;
+  inviteByUsername: (tripId: string, username: string) => Promise<void>;
+  inviteByUserId: (tripId: string, targetUserId: string) => Promise<void>;
+  resolveInviteToken: (token: string) => Promise<void>;
+
+  addFlight: (tripId: string, input: FlightInput) => Promise<void>;
+  updateFlight: (tripId: string, flightId: string, input: FlightInput) => Promise<void>;
+  deleteFlight: (tripId: string, flightId: string) => Promise<void>;
+  clearFlights: (tripId: string) => Promise<void>;
+
+  addItineraryDay: (tripId: string, label: string, date: string | null) => Promise<void>;
+  updateItineraryDay: (tripId: string, dayId: string, label: string) => Promise<void>;
+  deleteItineraryDay: (tripId: string, dayId: string) => Promise<void>;
+  addItineraryItem: (tripId: string, dayId: string, input: ItineraryItemInput) => Promise<void>;
+  updateItineraryItem: (
     tripId: string,
     dayId: string,
-    eventId: string,
-    updates: { name: string; time: string; location?: string; notes?: string; tickets?: TicketAttachment[]; endTime?: string }
-  ) => void;
-  deleteItineraryEvent: (tripId: string, dayId: string, eventId: string) => void;
-
-  expensesByTripId: Record<string, TripExpense[]>;
-  addExpense: (
+    itemId: string,
+    input: ItineraryItemInput,
+  ) => Promise<void>;
+  deleteItineraryItem: (tripId: string, dayId: string, itemId: string) => Promise<void>;
+  /** Replaces the whole itinerary (day renumbering after trip-date edits). */
+  setItinerary: (
     tripId: string,
-    expense: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[]; paidBy?: string }
-  ) => TripExpense;
-  updateExpense: (
-    tripId: string,
-    expenseId: string,
-    updates: { name: string; amount: number; currency: string; isSplit: boolean; splitType?: 'even'; splitWith?: string[]; paidBy?: string }
-  ) => void;
-  deleteExpense: (tripId: string, expenseId: string) => void;
+    days: {
+      label: string;
+      date: string | null;
+      items: Omit<ItineraryItem, 'id' | 'dayId' | 'tripId' | 'position'>[];
+    }[],
+  ) => Promise<void>;
 
-  journalByTripId: Record<string, JournalEntry[]>;
-  addJournalEntry: (tripId: string, entry: { date: string; text: string; isShared?: boolean; authorId?: string }) => JournalEntry;
-  updateJournalEntry: (tripId: string, entryId: string, updates: { text: string; isShared?: boolean }) => void;
-  deleteJournalEntry: (tripId: string, entryId: string) => void;
+  addExpense: (tripId: string, input: ExpenseInput) => Promise<void>;
+  updateExpense: (tripId: string, expenseId: string, input: ExpenseInput) => Promise<void>;
+  deleteExpense: (tripId: string, expenseId: string) => Promise<void>;
 
-  housingByTripId: Record<string, TripHousing[]>;
-  addHousing: (
-    tripId: string,
-    housing: Omit<TripHousing, 'id'>
-  ) => TripHousing;
-  deleteHousing: (tripId: string, housingId: string) => void;
+  addHousing: (tripId: string, input: HousingInput) => Promise<void>;
+  deleteHousing: (tripId: string, housingId: string) => Promise<void>;
+
+  markSettled: (tripId: string, from: string, to: string) => Promise<void>;
+  unmarkSettled: (tripId: string, from: string, to: string) => Promise<void>;
 }
 
 const TripsContext = createContext<TripsContextValue | undefined>(undefined);
 
-type PersistedTripsState = {
-  trips: Trip[];
-  flightsByTripId: Record<string, FlightInfo[]>;
-  flightByTripId?: Record<string, Omit<FlightInfo, 'id'> | undefined>;
-  itineraryByTripId: Record<string, ItineraryDay[]>;
-  expensesByTripId: Record<string, TripExpense[]>;
-  journalByTripId: Record<string, JournalEntry[]>;
-  housingByTripId?: Record<string, TripHousing[]>;
-};
+const REFRESH_DEBOUNCE_MS = 300;
 
-type TripsProviderProps = {
-  children: React.ReactNode;
-  userKey: string | null;
-};
+export function TripsProvider({ children, uid }: { children: React.ReactNode; uid: string | null }) {
+  const [trips, setTrips] = useState<TripBundle[]>([]);
+  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-export function TripsProvider({ children, userKey }: TripsProviderProps) {
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [flightsByTripId, setFlightsByTripId] = useState<Record<string, FlightInfo[]>>({});
-  const [itineraryByTripId, setItineraryByTripId] = useState<Record<string, ItineraryDay[]>>({});
-  const [expensesByTripId, setExpensesByTripId] = useState<Record<string, TripExpense[]>>({});
-  const [journalByTripId, setJournalByTripId] = useState<Record<string, JournalEntry[]>>({});
-  const [housingByTripId, setHousingByTripId] = useState<Record<string, TripHousing[]>>({});
-  const [isHydrated, setIsHydrated] = useState(false);
-  const [hydrationOk, setHydrationOk] = useState(false);
-  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // True while the persist effect is firing due to hydration (not a user action).
-  // Prevents writing stale data back to Supabase right after reading from it.
-  const skipPersistAfterHydration = useRef(false);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const hydrate = async () => {
-      if (!userKey) {
-        setTrips([]);
-        setFlightsByTripId({});
-        setItineraryByTripId({});
-        setExpensesByTripId({});
-        setJournalByTripId({});
-        setHousingByTripId({});
-        setHydrationOk(true);
-        setIsHydrated(true);
-        return;
-      }
-
-      setIsHydrated(false);
-      setHydrationOk(false);
-      try {
-        const { data, error } = await supabase
-          .from('user_data')
-          .select('data')
-          .eq('user_id', userKey)
-          .maybeSingle();
-        if (cancelled) return;
-        if (error) throw error;
-
-        if (!data) {
-          skipPersistAfterHydration.current = true;
-          setTrips([]);
-          setFlightsByTripId({});
-          setItineraryByTripId({});
-          setExpensesByTripId({});
-          setJournalByTripId({});
-          setHousingByTripId({});
-          if (!cancelled) setHydrationOk(true);
-          return;
-        }
-
-        const parsed = data.data as Partial<PersistedTripsState>;
-        skipPersistAfterHydration.current = true;
-        setTrips(Array.isArray(parsed.trips) ? parsed.trips : []);
-        const nextFlights =
-          parsed.flightsByTripId && typeof parsed.flightsByTripId === 'object' ? parsed.flightsByTripId : undefined;
-
-        if (nextFlights) {
-          setFlightsByTripId(nextFlights);
-        } else if (parsed.flightByTripId && typeof parsed.flightByTripId === 'object') {
-          const migrated: Record<string, FlightInfo[]> = {};
-          for (const [tripId, flight] of Object.entries(parsed.flightByTripId)) {
-            if (!flight || typeof flight !== 'object') continue;
-            migrated[tripId] = [
-              {
-                id: `flight-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                departureDate: String((flight as any).departureDate ?? ''),
-                departureTime: String((flight as any).departureTime ?? ''),
-                arrivalDate: (flight as any).arrivalDate ? String((flight as any).arrivalDate) : undefined,
-                arrivalTime: (flight as any).arrivalTime ? String((flight as any).arrivalTime) : undefined,
-                airline: (flight as any).airline ? String((flight as any).airline) : undefined,
-                flightNumber: (flight as any).flightNumber ? String((flight as any).flightNumber) : undefined,
-                from: (flight as any).from ? String((flight as any).from) : undefined,
-                fromCity: (flight as any).fromCity ? String((flight as any).fromCity) : undefined,
-                to: (flight as any).to ? String((flight as any).to) : undefined,
-                toCity: (flight as any).toCity ? String((flight as any).toCity) : undefined,
-              },
-            ];
-          }
-          setFlightsByTripId(migrated);
-        } else {
-          setFlightsByTripId({});
-        }
-        setItineraryByTripId(
-          parsed.itineraryByTripId && typeof parsed.itineraryByTripId === 'object' ? parsed.itineraryByTripId : {}
-        );
-        setExpensesByTripId(
-          parsed.expensesByTripId && typeof parsed.expensesByTripId === 'object' ? parsed.expensesByTripId : {}
-        );
-        setJournalByTripId(parsed.journalByTripId && typeof parsed.journalByTripId === 'object' ? parsed.journalByTripId : {});
-        setHousingByTripId(
-          parsed.housingByTripId && typeof parsed.housingByTripId === 'object' ? parsed.housingByTripId : {}
-        );
-        if (!cancelled) setHydrationOk(true);
-      } catch {
-        // Do NOT set hydrationOk — prevents persist from overwriting DB with empty state
-        if (cancelled) return;
-        setTrips([]);
-        setFlightsByTripId({});
-        setItineraryByTripId({});
-        setExpensesByTripId({});
-        setJournalByTripId({});
-        setHousingByTripId({});
-      } finally {
-        if (!cancelled) setIsHydrated(true);
-      }
-    };
-
-    hydrate();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [userKey]);
-
-  useEffect(() => {
-    if (!userKey) return;
-    if (!hydrationOk) return;
-
-    // Skip the persist that fires immediately after hydration — we just read
-    // this data from Supabase so writing it back would create a stale write
-    // that can race with and overwrite a concurrent deleteTrip write.
-    if (skipPersistAfterHydration.current) {
-      skipPersistAfterHydration.current = false;
+  const refresh = useCallback(async () => {
+    if (!uid) {
+      setTrips([]);
+      setPendingInvites([]);
+      setIsLoading(false);
       return;
     }
+    try {
+      const result = await fetchAllTrips(supabase, uid);
+      setTrips(result.trips);
+      setPendingInvites(result.pendingInvites);
+    } catch (err) {
+      console.warn('TripsProvider refresh error:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [uid]);
 
-    if (persistTimer.current) clearTimeout(persistTimer.current);
-    persistTimer.current = setTimeout(async () => {
-      const nextState: PersistedTripsState = {
-        trips,
-        flightsByTripId,
-        itineraryByTripId,
-        expensesByTripId,
-        journalByTripId,
-        housingByTripId,
-      };
-      await supabase
-        .from('user_data')
-        .upsert({ user_id: userKey, data: nextState }, { onConflict: 'user_id' });
-    }, 400);
+  useEffect(() => {
+    setIsLoading(true);
+    refresh();
+  }, [refresh]);
 
+  // Debounce: one action fans out to several realtime events (expense +
+  // splits, day + items); collapse them into a single refetch.
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedRefresh = useCallback(() => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = null;
+      refresh();
+    }, REFRESH_DEBOUNCE_MS);
+  }, [refresh]);
+
+  // Realtime: coarse refetch on any change to any trip table. Granular
+  // per-event patching is a later optimization; correctness first (ADR 0005).
+  useEffect(() => {
+    if (!uid) return;
+    const tables = [
+      'trips',
+      'trip_members',
+      'flights',
+      'itinerary_days',
+      'itinerary_items',
+      'expenses',
+      'expense_splits',
+      'housing',
+      'settlements',
+    ];
+    let channel = supabase.channel('trips_realtime');
+    for (const table of tables) {
+      channel = channel.on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table },
+        debouncedRefresh,
+      );
+    }
+    channel.subscribe((status) => {
+      // Events during a disconnect are lost, not replayed — refetch on every
+      // (re)join as the backstop (ADR 0005).
+      if (status === 'SUBSCRIBED') debouncedRefresh();
+    });
     return () => {
-      if (persistTimer.current) clearTimeout(persistTimer.current);
+      supabase.removeChannel(channel);
     };
-  }, [expensesByTripId, flightsByTripId, housingByTripId, hydrationOk, itineraryByTripId, journalByTripId, trips, userKey]);
+  }, [uid, debouncedRefresh]);
+
+  // Refetch on app foreground (ADR 0005 backstop).
+  useEffect(() => {
+    if (!uid) return;
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') debouncedRefresh();
+    });
+    return () => sub.remove();
+  }, [uid, debouncedRefresh]);
+
+  const updateLocalTrip = useCallback(
+    (tripId: string, updater: (t: TripBundle) => TripBundle) => {
+      setTrips((prev) => prev.map((t) => (t.trip.id === tripId ? updater(t) : t)));
+    },
+    [],
+  );
+
+  const requireUid = useCallback((): string => {
+    if (!uid) throw new Error('Not authenticated');
+    return uid;
+  }, [uid]);
 
   const value = useMemo<TripsContextValue>(() => {
-    const addTrip: TripsContextValue['addTrip'] = (trip) => {
-      const id = `${trip.destination}|${trip.startDate}|${trip.endDate}`;
-      const newTrip: Trip = { id, ...trip };
-
-      setTrips((prev) => {
-        const exists = prev.some((t) => t.id === id);
-        return exists ? prev : [newTrip, ...prev];
-      });
-
-      return newTrip;
-    };
-
-    const updateTrip: TripsContextValue['updateTrip'] = (tripId, updates) => {
-      const oldTrip = trips.find((t) => t.id === tripId);
-      const newId = `${updates.destination}|${updates.startDate}|${updates.endDate}`;
-      const updatedTrip: Trip = { id: newId, ...updates, isPublic: oldTrip?.isPublic };
-
-      setTrips((prev) => prev.map((t) => (t.id === tripId ? updatedTrip : t)));
-
-      setItineraryByTripId((prev) => {
-        const { [tripId]: data, ...rest } = prev;
-        const synced = syncItineraryToRange(data ?? [], updates.startDate, updates.endDate);
-        return { ...rest, [newId]: synced };
-      });
-
-      if (newId !== tripId) {
-        setFlightsByTripId((prev) => {
-          const { [tripId]: data, ...rest } = prev;
-          return data ? { ...rest, [newId]: data } : rest;
-        });
-        setExpensesByTripId((prev) => {
-          const { [tripId]: data, ...rest } = prev;
-          return data ? { ...rest, [newId]: data } : rest;
-        });
-        setJournalByTripId((prev) => {
-          const { [tripId]: data, ...rest } = prev;
-          return data ? { ...rest, [newId]: data } : rest;
-        });
-        setHousingByTripId((prev) => {
-          const { [tripId]: data, ...rest } = prev;
-          return data ? { ...rest, [newId]: data } : rest;
-        });
-      }
-
-      return updatedTrip;
-    };
-
-    const deleteTrip: TripsContextValue['deleteTrip'] = async (tripId) => {
-      if (persistTimer.current) {
-        clearTimeout(persistTimer.current);
-        persistTimer.current = null;
-      }
-
-      const newTrips = trips.filter((t) => t.id !== tripId);
-      const { [tripId]: _f, ...newFlights } = flightsByTripId;
-      const { [tripId]: _i, ...newItinerary } = itineraryByTripId;
-      const { [tripId]: _e, ...newExpenses } = expensesByTripId;
-      const { [tripId]: _j, ...newJournal } = journalByTripId;
-      const { [tripId]: _h, ...newHousing } = housingByTripId;
-
-      if (userKey) {
-        await supabase.from('user_data').upsert({
-          user_id: userKey,
-          data: {
-            trips: newTrips,
-            flightsByTripId: newFlights,
-            itineraryByTripId: newItinerary,
-            expensesByTripId: newExpenses,
-            journalByTripId: newJournal,
-            housingByTripId: newHousing,
-          },
-        }, { onConflict: 'user_id' });
-      }
-
-      setTrips(newTrips);
-      setFlightsByTripId(newFlights);
-      setItineraryByTripId(newItinerary);
-      setExpensesByTripId(newExpenses);
-      setJournalByTripId(newJournal);
-      setHousingByTripId(newHousing);
-    };
-
-    const setTripPublic: TripsContextValue['setTripPublic'] = (tripId, isPublic) => {
-      setTrips((prev) => prev.map((t) => (t.id === tripId ? { ...t, isPublic } : t)));
-    };
-
-    const normalizeFlight = (flight: Omit<FlightInfo, 'id'>): Omit<FlightInfo, 'id'> => ({
-      segment: flight.segment ?? 'auto',
-      departureDate: flight.departureDate.trim(),
-      departureTime: flight.departureTime.trim(),
-      arrivalDate: flight.arrivalDate?.trim() ? flight.arrivalDate.trim() : undefined,
-      arrivalTime: flight.arrivalTime?.trim() ? flight.arrivalTime.trim() : undefined,
-      airline: flight.airline?.trim() ? flight.airline.trim() : undefined,
-      flightNumber: flight.flightNumber?.trim() ? flight.flightNumber.trim() : undefined,
-      from: flight.from?.trim() ? flight.from.trim() : undefined,
-      fromCity: flight.fromCity?.trim() ? flight.fromCity.trim() : undefined,
-      to: flight.to?.trim() ? flight.to.trim() : undefined,
-      toCity: flight.toCity?.trim() ? flight.toCity.trim() : undefined,
-    });
-
-    const addFlight: TripsContextValue['addFlight'] = (tripId, flight) => {
-      const created: FlightInfo = {
-        id: `flight-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        ...normalizeFlight(flight),
-      };
-
-      setFlightsByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        return { ...prev, [tripId]: [...current, created] };
-      });
-
-      return created;
-    };
-
-    const updateFlight: TripsContextValue['updateFlight'] = (tripId, flightId, flight) => {
-      setFlightsByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        const next = current.map((f) => (f.id === flightId ? { ...f, ...normalizeFlight(flight) } : f));
-        return { ...prev, [tripId]: next };
-      });
-    };
-
-    const deleteFlight: TripsContextValue['deleteFlight'] = (tripId, flightId) => {
-      setFlightsByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        return { ...prev, [tripId]: current.filter((f) => f.id !== flightId) };
-      });
-    };
-
-    const clearFlights: TripsContextValue['clearFlights'] = (tripId) => {
-      setFlightsByTripId((prev) => ({ ...prev, [tripId]: [] }));
-    };
-
-    const addItineraryDay: TripsContextValue['addItineraryDay'] = (tripId, label, date) => {
-      const currentCount = itineraryByTripId[tripId]?.length ?? 0;
-      const createdDay: ItineraryDay = {
-        id: `day-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        label: label.trim() ? label.trim() : `Day ${currentCount + 1}`,
-        date,
-        events: [],
-      };
-
-      setItineraryByTripId((prev) => {
-        const currentDays = prev[tripId] ?? [];
-        return {
-          ...prev,
-          [tripId]: [...currentDays, createdDay],
-        };
-      });
-
-      return createdDay;
-    };
-
-    const addItineraryEvent: TripsContextValue['addItineraryEvent'] = (tripId, dayId, name, time, location, notes, tickets, endTime) => {
-      const createdEvent: ItineraryEvent = {
-        id: `event-${Date.now()}`,
-        name,
-        time,
-        endTime: endTime ?? undefined,
-        location,
-        notes: notes?.trim() || undefined,
-        tickets: tickets && tickets.length > 0 ? tickets : undefined,
-      };
-
-      setItineraryByTripId((prev) => {
-        const currentDays = prev[tripId] ?? [];
-        const nextDays = currentDays.map((day) => {
-          if (day.id !== dayId) return day;
-          return {
-            ...day,
-            events: [...day.events, createdEvent],
-          };
-        });
-        return {
-          ...prev,
-          [tripId]: nextDays,
-        };
-      });
-
-      return createdEvent;
-    };
-
-    const updateItineraryDay: TripsContextValue['updateItineraryDay'] = (tripId, dayId, label) => {
-      setItineraryByTripId((prev) => {
-        const currentDays = prev[tripId] ?? [];
-        const nextLabel = label.trim();
-        const nextDays = currentDays.map((day) => (day.id === dayId ? { ...day, label: nextLabel || day.label } : day));
-        return { ...prev, [tripId]: nextDays };
-      });
-    };
-
-    const deleteItineraryDay: TripsContextValue['deleteItineraryDay'] = (tripId, dayId) => {
-      setItineraryByTripId((prev) => {
-        const currentDays = prev[tripId] ?? [];
-        const nextDays = currentDays.filter((day) => day.id !== dayId);
-        return { ...prev, [tripId]: nextDays };
-      });
-    };
-
-    const updateItineraryEvent: TripsContextValue['updateItineraryEvent'] = (tripId, dayId, eventId, updates) => {
-      setItineraryByTripId((prev) => {
-        const currentDays = prev[tripId] ?? [];
-        const nextDays = currentDays.map((day) => {
-          if (day.id !== dayId) return day;
-          const nextEvents = day.events.map((e) => {
-            if (e.id !== eventId) return e;
-            const nextName = updates.name.trim();
-            const nextTime = updates.time.trim();
-            const nextLocation = updates.location?.trim();
-            return {
-              ...e,
-              name: nextName || e.name,
-              time: nextTime || e.time,
-              location: nextLocation ? nextLocation : undefined,
-              notes: updates.notes?.trim() || undefined,
-              tickets: updates.tickets !== undefined ? updates.tickets : e.tickets,
-              endTime: updates.endTime ?? undefined,
-            };
-          });
-          return { ...day, events: nextEvents };
-        });
-        return { ...prev, [tripId]: nextDays };
-      });
-    };
-
-    const deleteItineraryEvent: TripsContextValue['deleteItineraryEvent'] = (tripId, dayId, eventId) => {
-      setItineraryByTripId((prev) => {
-        const currentDays = prev[tripId] ?? [];
-        const nextDays = currentDays.map((day) => {
-          if (day.id !== dayId) return day;
-          return { ...day, events: day.events.filter((e) => e.id !== eventId) };
-        });
-        return { ...prev, [tripId]: nextDays };
-      });
-    };
-
-    const addExpense: TripsContextValue['addExpense'] = (tripId, expense) => {
-      const createdExpense: TripExpense = {
-        id: `expense-${Date.now()}`,
-        name: expense.name.trim(),
-        amount: expense.amount,
-        currency: expense.currency.trim().toUpperCase(),
-        isSplit: expense.isSplit,
-        splitType: expense.splitType,
-        splitWith: expense.splitWith,
-        paidBy: expense.paidBy,
-        createdAt: new Date().toISOString(),
-      };
-
-      setExpensesByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        return {
-          ...prev,
-          [tripId]: [createdExpense, ...current],
-        };
-      });
-
-      return createdExpense;
-    };
-
-    const updateExpense: TripsContextValue['updateExpense'] = (tripId, expenseId, updates) => {
-      setExpensesByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        const nextName = updates.name.trim();
-        const nextCurrency = updates.currency.trim().toUpperCase();
-        const nextAmount = updates.amount;
-        const nextIsSplit = updates.isSplit;
-        const next = current.map((e) =>
-          e.id === expenseId
-            ? {
-                ...e,
-                name: nextName,
-                amount: nextAmount,
-                currency: nextCurrency,
-                isSplit: nextIsSplit,
-                splitType: updates.splitType,
-                splitWith: updates.splitWith,
-                paidBy: updates.paidBy,
-              }
-            : e
-        );
-        return { ...prev, [tripId]: next };
-      });
-    };
-
-    const deleteExpense: TripsContextValue['deleteExpense'] = (tripId, expenseId) => {
-      setExpensesByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        return { ...prev, [tripId]: current.filter((e) => e.id !== expenseId) };
-      });
-    };
-
-    const addJournalEntry: TripsContextValue['addJournalEntry'] = (tripId, entry) => {
-      const createdEntry: JournalEntry = {
-        id: `journal-${Date.now()}`,
-        date: entry.date,
-        text: entry.text,
-        isShared: entry.isShared,
-        authorId: entry.authorId,
-      };
-
-      setJournalByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        return {
-          ...prev,
-          [tripId]: [createdEntry, ...current],
-        };
-      });
-
-      return createdEntry;
-    };
-
-    const updateJournalEntry: TripsContextValue['updateJournalEntry'] = (tripId, entryId, updates) => {
-      setJournalByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        const next = current.map((e) =>
-          e.id === entryId ? { ...e, text: updates.text, isShared: updates.isShared } : e,
-        );
-        return { ...prev, [tripId]: next };
-      });
-    };
-
-    const deleteJournalEntry: TripsContextValue['deleteJournalEntry'] = (tripId, entryId) => {
-      setJournalByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        return { ...prev, [tripId]: current.filter((e) => e.id !== entryId) };
-      });
-    };
-
-    const addHousing: TripsContextValue['addHousing'] = (tripId, housing) => {
-      const created: TripHousing = {
-        id: `housing-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        location: housing.location.trim(),
-        startDate: housing.startDate,
-        endDate: housing.endDate,
-        checkInTime: housing.checkInTime?.trim() || undefined,
-        checkOutTime: housing.checkOutTime?.trim() || undefined,
-      };
-
-      setHousingByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        return { ...prev, [tripId]: [...current, created] };
-      });
-
-      return created;
-    };
-
-    const deleteHousing: TripsContextValue['deleteHousing'] = (tripId, housingId) => {
-      setHousingByTripId((prev) => {
-        const current = prev[tripId] ?? [];
-        return { ...prev, [tripId]: current.filter((h) => h.id !== housingId) };
-      });
-    };
-
     return {
       trips,
-      addTrip,
-      updateTrip,
-      deleteTrip,
-      setTripPublic,
-      flightsByTripId,
-      addFlight,
-      updateFlight,
-      deleteFlight,
-      clearFlights,
-      itineraryByTripId,
-      addItineraryDay,
-      addItineraryEvent,
-      updateItineraryDay,
-      deleteItineraryDay,
-      updateItineraryEvent,
-      deleteItineraryEvent,
-      expensesByTripId,
-      addExpense,
-      updateExpense,
-      deleteExpense,
-      journalByTripId,
-      addJournalEntry,
-      updateJournalEntry,
-      deleteJournalEntry,
-      housingByTripId,
-      addHousing,
-      deleteHousing,
+      pendingInvites,
+      isLoading,
+      refresh,
+
+      // ── Trips ──────────────────────────────────────────────────────────
+      addTrip: async (input) => {
+        const userId = requireUid();
+        const trip = await createTrip(supabase, userId, input);
+        await refresh();
+        return trip;
+      },
+      updateTrip: async (tripId, input) => {
+        const trip = await updateTripDetails(supabase, tripId, input);
+        updateLocalTrip(tripId, (t) => ({ ...t, trip }));
+      },
+      deleteTrip: async (tripId) => {
+        await coreDeleteTrip(supabase, tripId);
+        setTrips((prev) => prev.filter((t) => t.trip.id !== tripId));
+      },
+      leaveTrip: async (tripId) => {
+        await coreLeaveTrip(supabase, tripId, requireUid());
+        setTrips((prev) => prev.filter((t) => t.trip.id !== tripId));
+      },
+
+      // ── Invites & membership ───────────────────────────────────────────
+      acceptInvite: async (tripId) => {
+        const invite = pendingInvites.find((i) => i.tripId === tripId);
+        if (!invite) throw new Error('Invite not found.');
+        await coreAcceptInvite(supabase, invite.memberRowId);
+        await refresh();
+      },
+      declineInvite: async (tripId) => {
+        const invite = pendingInvites.find((i) => i.tripId === tripId);
+        if (!invite) throw new Error('Invite not found.');
+        await coreDeclineInvite(supabase, invite.memberRowId);
+        setPendingInvites((prev) => prev.filter((i) => i.tripId !== tripId));
+      },
+      inviteToTrip: (tripId) => createInviteToken(supabase, tripId, requireUid()),
+      inviteByUsername: async (tripId, username) => {
+        await coreInviteByUsername(supabase, tripId, requireUid(), username);
+        await refresh();
+      },
+      inviteByUserId: async (tripId, targetUserId) => {
+        await coreInviteByUserId(supabase, tripId, requireUid(), targetUserId);
+        await refresh();
+      },
+      resolveInviteToken: async (token) => {
+        await coreResolveInviteToken(supabase, requireUid(), token);
+        await refresh();
+      },
+
+      // ── Flights ────────────────────────────────────────────────────────
+      addFlight: async (tripId, input) => {
+        const flight = await coreAddFlight(supabase, tripId, requireUid(), input);
+        updateLocalTrip(tripId, (t) => ({ ...t, flights: [...t.flights, flight] }));
+      },
+      updateFlight: async (tripId, flightId, input) => {
+        const flight = await coreUpdateFlight(supabase, flightId, input);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          flights: t.flights.map((f) => (f.id === flightId ? flight : f)),
+        }));
+      },
+      deleteFlight: async (tripId, flightId) => {
+        await coreDeleteFlight(supabase, flightId);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          flights: t.flights.filter((f) => f.id !== flightId),
+        }));
+      },
+      clearFlights: async (tripId) => {
+        await coreClearFlights(supabase, tripId);
+        updateLocalTrip(tripId, (t) => ({ ...t, flights: [] }));
+      },
+
+      // ── Itinerary ──────────────────────────────────────────────────────
+      addItineraryDay: async (tripId, label, date) => {
+        const trip = trips.find((t) => t.trip.id === tripId);
+        const position = (trip?.itinerary.length ?? 0) + 1;
+        const day = await coreAddItineraryDay(supabase, tripId, label, date, position);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          itinerary: [...t.itinerary, { ...day, items: [] }],
+        }));
+      },
+      updateItineraryDay: async (tripId, dayId, label) => {
+        await coreUpdateItineraryDay(supabase, dayId, { label });
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          itinerary: t.itinerary.map((d) => (d.id === dayId ? { ...d, label } : d)),
+        }));
+      },
+      deleteItineraryDay: async (tripId, dayId) => {
+        await coreDeleteItineraryDay(supabase, dayId);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          itinerary: t.itinerary.filter((d) => d.id !== dayId),
+        }));
+      },
+      addItineraryItem: async (tripId, dayId, input) => {
+        const trip = trips.find((t) => t.trip.id === tripId);
+        const day = trip?.itinerary.find((d) => d.id === dayId);
+        const position = (day?.items.length ?? 0) + 1;
+        const item = await coreAddItineraryItem(
+          supabase,
+          tripId,
+          dayId,
+          requireUid(),
+          input,
+          position,
+        );
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          itinerary: t.itinerary.map((d) =>
+            d.id === dayId ? { ...d, items: [...d.items, item] } : d,
+          ),
+        }));
+      },
+      updateItineraryItem: async (tripId, dayId, itemId, input) => {
+        await coreUpdateItineraryItem(supabase, itemId, input);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          itinerary: t.itinerary.map((d) =>
+            d.id === dayId
+              ? {
+                  ...d,
+                  items: d.items.map((i) =>
+                    i.id === itemId
+                      ? {
+                          ...i,
+                          name: input.name,
+                          startTime: input.startTime,
+                          endTime: input.endTime ?? null,
+                          location: input.location ?? null,
+                          notes: input.notes ?? null,
+                          tickets: input.tickets ?? [],
+                          estimatedCost: input.estimatedCost ?? null,
+                          costType: input.costType ?? null,
+                          currency: input.currency ?? null,
+                        }
+                      : i,
+                  ),
+                }
+              : d,
+          ),
+        }));
+      },
+      deleteItineraryItem: async (tripId, dayId, itemId) => {
+        await coreDeleteItineraryItem(supabase, itemId);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          itinerary: t.itinerary.map((d) =>
+            d.id === dayId ? { ...d, items: d.items.filter((i) => i.id !== itemId) } : d,
+          ),
+        }));
+      },
+      setItinerary: async (tripId, days) => {
+        await replaceItinerary(supabase, tripId, days);
+        await refresh();
+      },
+
+      // ── Expenses ───────────────────────────────────────────────────────
+      addExpense: async (tripId, input) => {
+        const expense = await coreAddExpense(supabase, tripId, requireUid(), input);
+        updateLocalTrip(tripId, (t) => ({ ...t, expenses: [...t.expenses, expense] }));
+      },
+      updateExpense: async (tripId, expenseId, input) => {
+        await coreUpdateExpense(supabase, tripId, expenseId, input);
+        await refresh();
+      },
+      deleteExpense: async (tripId, expenseId) => {
+        await coreDeleteExpense(supabase, expenseId);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          expenses: t.expenses.filter((e) => e.id !== expenseId),
+        }));
+      },
+
+      // ── Housing ────────────────────────────────────────────────────────
+      addHousing: async (tripId, input) => {
+        const housing = await coreAddHousing(supabase, tripId, requireUid(), input);
+        updateLocalTrip(tripId, (t) => ({ ...t, housing: [...t.housing, housing] }));
+      },
+      deleteHousing: async (tripId, housingId) => {
+        await coreDeleteHousing(supabase, housingId);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          housing: t.housing.filter((h) => h.id !== housingId),
+        }));
+      },
+
+      // ── Settlements ────────────────────────────────────────────────────
+      markSettled: async (tripId, from, to) => {
+        const settlement = await coreMarkSettled(supabase, tripId, from, to, requireUid());
+        updateLocalTrip(tripId, (t) => ({ ...t, settlements: [...t.settlements, settlement] }));
+      },
+      unmarkSettled: async (tripId, from, to) => {
+        await coreUnmarkSettled(supabase, tripId, from, to);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          settlements: t.settlements.filter((s) => !(s.fromUser === from && s.toUser === to)),
+        }));
+      },
     };
-  }, [expensesByTripId, flightsByTripId, housingByTripId, hydrationOk, itineraryByTripId, journalByTripId, trips, userKey]);
+  }, [trips, pendingInvites, isLoading, refresh, requireUid, updateLocalTrip]);
 
   return <TripsContext.Provider value={value}>{children}</TripsContext.Provider>;
 }
 
 export function useTrips() {
   const ctx = useContext(TripsContext);
-  if (!ctx) {
-    throw new Error('useTrips must be used within a TripsProvider');
-  }
+  if (!ctx) throw new Error('useTrips must be used within TripsProvider');
   return ctx;
 }
