@@ -2,4 +2,6 @@
 // Consumed as TypeScript source by both apps: Metro transpiles it for mobile,
 // and the future Next.js app lists it in `transpilePackages`.
 
-export const CORE_VERSION = '0.0.1';
+export * from './types';
+export * from './finance';
+export * from './data';
