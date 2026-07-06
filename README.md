@@ -1,73 +1,30 @@
 # Shmoves
 
-**Your travel life, all in one place.**
+**Group trip planning & finance, done really well.**
 
-Shmoves is a full-stack mobile app that eliminates the chaos of group travel — no more bouncing between your email for flight confirmations, your Airbnb app for addresses, and three different group chats for photos. Everything you need for a trip lives in Shmoves, and it's built to be shared.
+Shmoves is where a group plans a trip together and knows what it costs — before, during, and after.
 
-**[Download on the App Store!]([https://your-url-here.com](https://apps.apple.com/us/app/shmoves/id6761285310))**
+## The Vision
 
----
+Planning a group trip should feel like being together. Not a Google Doc one person maintains. Not a group chat where plans get buried. A live, shared space where the trip takes shape in front of everyone.
 
-## The Problem
+Two surfaces, one trip:
 
-Anyone who's traveled with a group knows the drill: your itinerary is in a Google Doc, your accommodation address is buried in an email, your tickets are in a PDF somewhere, and the photos from the trip are spread across five different people's camera rolls. It's a mess.
+- **Web (shmoves.app)** — the planning cockpit. Big screen, full editing, where the trip gets built.
+- **Mobile app** — the companion in your pocket. The details of the trip, with you on the trip.
 
-Shmoves fixes that.
+Everything syncs live. Add a flight on your laptop, it's on your friend's phone a second later.
 
----
+## The Two Pillars
 
-## Features
+**Planning.** Flights, itinerary, housing, documents — all in one place, built together in real time.
 
-### 🗂 Trip Organization
-Keep all your travel documents in one place — flight tickets, hotel confirmations, itineraries, addresses, and anything else you need. No more digging through email.
+**Money.** Every plannable item carries an estimated cost. The trip shows a live "this trip will cost ~$X right now" number that grows as the plan fills in. Cost is a visible consequence of planning, not a post-trip autopsy. Expenses split across the group, balances stay current, settling up is painless.
 
-### 📸 Group Photo Sharing
-Everyone on the trip can upload photos directly to a shared album. Favorite the shots you love, and share them directly to social media from inside the app — no re-downloading, no re-uploading.
+The differentiator: forward-looking money. Splitwise tells you what you spent. Shmoves tells you what the trip will cost.
 
-### 💸 Trip Finance Tracker
-Track what you've spent, split costs with your group, and see at a glance who's paid you back and who hasn't. Travel math, solved.
+## Principles
 
-### 🔗 Easy Group Invites
-Invite travel companions via QR code or SMS — they're in the trip in seconds.
-
-### 🔐 Secure Authentication
-Sign in with Apple for a seamless, privacy-first login experience.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-| Framework | React Native + Expo |
-| Language | TypeScript |
-| Navigation | Expo Router (file-based) |
-| Backend & Auth | Supabase |
-| Serverless Functions | Supabase Edge Functions (SMS invites) |
-| UI & Animation | React Native Reanimated, Gesture Handler |
-| Media | Expo Image Picker, Expo Camera, Expo Media Library |
-| Sharing | React Native QR Code SVG, Expo Clipboard |
-| CI | GitHub Actions |
-
----
-
-## Architecture Highlights
-
-- **Supabase** handles authentication (including Apple Sign-In), real-time database, and file storage for trip documents and photos
-- **Supabase Edge Functions** power SMS-based trip invitations without exposing credentials on the client
-- **File-based routing** via Expo Router keeps navigation clean and scalable
-- **Context API** manages shared trip state across screens
-- **TypeScript throughout** for type safety and maintainability
-
----
-
-## About the Developer
-
-I'm a former IB Math & Science teacher turned self-taught software engineer. I built Shmoves because I kept running into the same frustrating problem every time I traveled with a group — and decided to build the solution myself.
-
-It's live on the App Store and actively maintained.
-
----
-
-## Contact
-
-Feel free to reach out on [LinkedIn]([https://your-url-here.com](https://www.linkedin.com/in/mashroor-ali/)) or open an issue if you find a bug or have a feature idea.
+- One data model, one source of truth. A personal trip is just a trip with one member.
+- Finance math lives in one shared package. A balance must never disagree between web and phone.
+- Keep it simple. One auth method. Every phase ends with a working product.
