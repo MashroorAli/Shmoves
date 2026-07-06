@@ -1,6 +1,6 @@
 # Shmoves
 
-**Group trip planning & finance, done really well.**
+**Group trip planning and money, done really well.**
 
 Shmoves is where a group plans a trip together and knows what it costs — before, during, and after.
 
@@ -22,6 +22,14 @@ Everything syncs live. Add a flight on your laptop, it's on your friend's phone 
 **Money.** Every plannable item carries an estimated cost. The trip shows a live "this trip will cost ~$X right now" number that grows as the plan fills in. Cost is a visible consequence of planning, not a post-trip autopsy. Expenses split across the group, balances stay current, settling up is painless.
 
 The differentiator: forward-looking money. Splitwise tells you what you spent. Shmoves tells you what the trip will cost.
+
+## What Shmoves Is Not
+
+Not a social network. Not a photo-sharing app. Photos, journaling, and the activity feed were removed to do one thing really well (see ADR 0002).
+
+## Growth Loop
+
+Invites are web links (`shmoves.app/invite/TOKEN`). An invitee sees a read-only preview of the trip — name, dates, who's going, cost so far — before signing up. The trip itself is the sales pitch.
 
 ## Principles
 
