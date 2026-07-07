@@ -24,36 +24,39 @@ $$;
 -- Membership checks are SECURITY DEFINER so policies on trip_members itself
 -- (and on child tables) don't recurse into trip_members RLS.
 
-create or replace function is_trip_member(t uuid) returns boolean
+-- Parameter is named p_trip_id to match the function that already exists in
+-- the live DB (created via the dashboard, April 2026) — `create or replace`
+-- cannot rename parameters, only swap the body.
+create or replace function is_trip_member(p_trip_id uuid) returns boolean
 language sql stable security definer
 set search_path = public
 as $$
   select exists (
     select 1 from trip_members m
-    where m.trip_id = t and m.user_id = auth.uid() and m.status = 'accepted'
+    where m.trip_id = p_trip_id and m.user_id = auth.uid() and m.status = 'accepted'
   );
 $$;
 
 -- Pending invitees may see the trip row (name/dates for the invite card),
 -- but not child data.
-create or replace function can_view_trip(t uuid) returns boolean
+create or replace function can_view_trip(p_trip_id uuid) returns boolean
 language sql stable security definer
 set search_path = public
 as $$
   select exists (
     select 1 from trip_members m
-    where m.trip_id = t and m.user_id = auth.uid()
+    where m.trip_id = p_trip_id and m.user_id = auth.uid()
       and m.status in ('pending', 'accepted')
   );
 $$;
 
-create or replace function is_trip_owner(t uuid) returns boolean
+create or replace function is_trip_owner(p_trip_id uuid) returns boolean
 language sql stable security definer
 set search_path = public
 as $$
   select exists (
     select 1 from trip_members m
-    where m.trip_id = t and m.user_id = auth.uid()
+    where m.trip_id = p_trip_id and m.user_id = auth.uid()
       and m.role = 'owner' and m.status = 'accepted'
   );
 $$;

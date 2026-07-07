@@ -10,8 +10,11 @@
 --
 -- Dropped intentionally (ADR 0002): journal, photos, feed.
 --
--- Runs in one transaction (supabase db push wraps each file). Verify with the
--- queries at the bottom before applying 20260706000002_drop_legacy.sql.
+-- Runs in one transaction: begin/commit are inline below so this file is safe
+-- to paste directly into the dashboard SQL editor. Verify with the queries at
+-- the bottom before applying 20260706000002_drop_legacy.sql.
+
+begin;
 
 -- ─── Safe-cast helpers (bad legacy values become NULL, not errors) ───────────
 
@@ -406,6 +409,8 @@ begin
     end;
   end if;
 end $$;
+
+commit;
 
 -- ─── Verification (run manually after this migration, before drop_legacy) ────
 --
