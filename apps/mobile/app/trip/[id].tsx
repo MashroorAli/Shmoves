@@ -41,17 +41,73 @@ import RNAnimated, {
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { TripInviteSheet } from '@/components/trip-invite-sheet';
-import { TripPrivacyCard } from '@/components/trip-privacy-card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { CURRENCIES, CURRENCY_SYMBOLS, inferDestinationCurrency } from '@/constants/currencies';
 import { useAuth } from '@/context/auth-context';
 import { useHomeCurrency } from '@/context/home-currency-context';
-import { type PhotoEntry, type Settlement, useSharedTrips } from '@/context/shared-trips-context';
-import { type ItineraryDay, type ItineraryEvent, type TicketAttachment, type TripHousing, useTrips } from '@/context/trips-context';
+import { type TicketAttachment, useTrips } from '@/context/trips-context';
+import { computeBalances, computeTransfers, isPairSettled } from '@shmoves/core';
 import { useColors } from '@/hooks/use-colors';
 import { useTempUnit } from '@/context/temp-unit-context';
 import { useTimeFormat } from '@/context/time-format-context';
 import { supabase } from '@/config/supabase';
+
+// Legacy view shapes: the render code below still reads these; they are
+// derived from the TripBundle in one place at the top of the component.
+type FlightInfo = {
+  id: string;
+  segment?: 'auto' | 'going' | 'mid' | 'return';
+  departureDate: string;
+  departureTime: string;
+  arrivalDate?: string;
+  arrivalTime?: string;
+  airline?: string;
+  flightNumber?: string;
+  from?: string;
+  fromCity?: string;
+  to?: string;
+  toCity?: string;
+};
+
+type ItineraryEvent = {
+  id: string;
+  name: string;
+  time: string;
+  endTime?: string;
+  location?: string;
+  notes?: string;
+  tickets?: TicketAttachment[];
+};
+
+type ItineraryDay = {
+  id: string;
+  label: string;
+  date: string;
+  events: ItineraryEvent[];
+};
+
+type TripExpense = {
+  id: string;
+  name: string;
+  amount: number;
+  currency: string;
+  isSplit: boolean;
+  splitType?: 'even';
+  splitWith?: string[];
+  createdBy?: string;
+  paidBy?: string;
+  createdAt: string;
+};
+
+type TripHousing = {
+  id: string;
+  location: string;
+  startDate: string;
+  endDate: string;
+  checkInTime?: string;
+  checkOutTime?: string;
+  earlyCheckInRequested?: boolean;
+};
 
 type CachedHeroImages = {
   fetchedAt: number;
@@ -65,71 +121,6 @@ type TripPerson = {
   avatarUri?: string;
 };
 
-
-// ─── PhotoTile ───────────────────────────────────────────────────────────────
-function PhotoTile({
-  photo,
-  size,
-  onPress,
-  onLongPress,
-  colors,
-  tripPeople,
-}: {
-  photo: PhotoEntry;
-  size: number;
-  onPress: () => void;
-  onLongPress: () => void;
-  colors: typeof import('@/constants/theme').Colors.light;
-  tripPeople: TripPerson[];
-}) {
-  const favCount = photo.favoritedBy?.length ?? 0;
-  return (
-    <Pressable onPress={onPress} onLongPress={onLongPress} style={{ width: size, height: size }}>
-      {photo.path ? (
-        <ExpoImage
-          source={{ uri: photo.path }}
-          style={{ width: size, height: size }}
-          contentFit="cover"
-          cachePolicy="memory-disk"
-        />
-      ) : (
-        <View style={{ width: size, height: size, backgroundColor: colors.surfaceMuted, justifyContent: 'center', alignItems: 'center' }}>
-          <ActivityIndicator size="small" color={colors.icon} />
-        </View>
-      )}
-
-      {/* Favorite indicator overlay */}
-      {favCount > 0 && (
-        <View style={{ position: 'absolute', bottom: 4, right: 4, flexDirection: 'row', alignItems: 'center' }}>
-          {photo.favoritedBy!.slice(0, 3).map((favId, i) => {
-            const person = tripPeople.find((p) => p.id === favId);
-            return (
-              <View
-                key={favId}
-                style={{
-                  width: 14, height: 14, borderRadius: 7,
-                  backgroundColor: '#333', borderWidth: 1, borderColor: '#000',
-                  overflow: 'hidden', justifyContent: 'center', alignItems: 'center',
-                  marginLeft: i > 0 ? -4 : 0, zIndex: 3 - i,
-                }}>
-                {person?.avatarUri ? (
-                  <ExpoImage source={{ uri: person.avatarUri }} style={{ width: 14, height: 14 }} contentFit="cover" />
-                ) : (
-                  <ThemedText style={{ fontSize: 6, color: '#fff', lineHeight: 8 }}>
-                    {(person?.name ?? '?').charAt(0).toUpperCase()}
-                  </ThemedText>
-                )}
-              </View>
-            );
-          })}
-          <View style={{ marginLeft: 3, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 8, paddingHorizontal: 3, paddingVertical: 1 }}>
-            <ThemedText style={{ fontSize: 9, color: '#ff4d6d', lineHeight: 12 }}>♥</ThemedText>
-          </View>
-        </View>
-      )}
-    </Pressable>
-  );
-}
 
 function DayCard({ children }: { children: React.ReactNode }) {
   return <View>{children}</View>;
@@ -146,66 +137,106 @@ export default function TripDetailsScreen() {
   const { homeCurrency, convertToHome } = useHomeCurrency();
   const { uid, profileName, profileAvatarUrl } = useAuth();
   const {
-    sharedTrips,
-    migrateToShared,
+    trips,
     inviteToTrip,
     inviteByUsername,
     inviteByUserId,
-    addSharedFlight,
-    updateSharedFlight,
-    deleteSharedFlight,
-    addSharedItineraryDay,
-    addSharedItineraryEvent,
-    updateSharedItineraryDay,
-    bulkSetSharedItineraryDays,
-    updateSharedItineraryEvent,
-    deleteSharedItineraryEvent,
-    addSharedExpense,
-    updateSharedExpense,
-    deleteSharedExpense,
-    addSharedHousing,
-    deleteSharedHousing,
-    addSharedPhoto,
-    deleteSharedPhoto,
-    toggleFavoritePhoto,
-    markSettled,
-    unmarkSettled,
-  } = useSharedTrips();
-  const {
-    trips,
-    flightsByTripId,
     addFlight,
     updateFlight,
     deleteFlight,
-    itineraryByTripId,
     addItineraryDay,
-    addItineraryEvent,
     updateItineraryDay,
-    updateItineraryEvent,
-    deleteItineraryEvent,
-    expensesByTripId,
+    deleteItineraryDay,
+    addItineraryItem,
+    updateItineraryItem,
+    deleteItineraryItem,
+    setItinerary,
     addExpense,
     updateExpense,
     deleteExpense,
-    journalByTripId,
-    addJournalEntry,
-    updateJournalEntry,
-    deleteJournalEntry,
-    housingByTripId,
     addHousing,
     deleteHousing,
+    markSettled,
+    unmarkSettled,
   } = useTrips();
-  const [activeTab, setActiveTab] = useState<'overview' | 'itinerary' | 'finances' | 'photos' | 'feed'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'itinerary' | 'finances'>('overview');
 
-  const sharedTrip = sharedTrips.find(
-    (st) => st.trip.id === id || st.id === id,
-  );
-  const trip = id ? (trips.find((t) => t.id === id) ?? sharedTrip?.trip) : undefined;
+  // Every trip is a TripBundle now. Derive the legacy view shapes the render
+  // code reads in one place; "shared" just means >1 accepted member.
+  const bundle = id ? trips.find((t) => t.trip.id === id) : undefined;
+  const trip = bundle
+    ? {
+        id: bundle.trip.id,
+        destination: bundle.trip.destination,
+        startDate: bundle.trip.startDate ?? '',
+        endDate: bundle.trip.endDate ?? '',
+      }
+    : undefined;
   const tripId = id;
-  const flights = tripId ? (sharedTrip ? (sharedTrip.flights ?? []) : (flightsByTripId[tripId] ?? [])) : [];
-  const itineraryDays = tripId ? (sharedTrip ? (sharedTrip.itinerary ?? []) : (itineraryByTripId[tripId] ?? [])) : [];
-  const expenses = tripId ? (sharedTrip ? (sharedTrip.expenses ?? []) : (expensesByTripId[tripId] ?? [])) : [];
-  const journalEntries = tripId ? (sharedTrip ? (sharedTrip.journal ?? []) : (journalByTripId[tripId] ?? [])) : [];
+
+  const acceptedMembers = useMemo(
+    () => (bundle?.members ?? []).filter((m) => m.status === 'accepted'),
+    [bundle?.members],
+  );
+  const isSharedTrip = acceptedMembers.length > 1;
+
+  const flights: FlightInfo[] = useMemo(
+    () =>
+      (bundle?.flights ?? []).map((f) => ({
+        id: f.id,
+        segment: f.segment ?? undefined,
+        departureDate: f.departureDate ?? '',
+        departureTime: f.departureTime ?? '',
+        arrivalDate: f.arrivalDate ?? undefined,
+        arrivalTime: f.arrivalTime ?? undefined,
+        airline: f.airline ?? undefined,
+        flightNumber: f.flightNumber ?? undefined,
+        from: f.fromAirport ?? undefined,
+        fromCity: f.fromCity ?? undefined,
+        to: f.toAirport ?? undefined,
+        toCity: f.toCity ?? undefined,
+      })),
+    [bundle?.flights],
+  );
+
+  const itineraryDays: ItineraryDay[] = useMemo(
+    () =>
+      (bundle?.itinerary ?? []).map((d) => ({
+        id: d.id,
+        label: d.label,
+        date: d.date ?? '',
+        events: d.items.map((i) => ({
+          id: i.id,
+          name: i.name,
+          time: i.startTime ?? '',
+          endTime: i.endTime ?? undefined,
+          location: i.location ?? undefined,
+          notes: i.notes ?? undefined,
+          tickets: i.tickets,
+        })),
+      })),
+    [bundle?.itinerary],
+  );
+
+  const expenses: TripExpense[] = useMemo(
+    () =>
+      (bundle?.expenses ?? []).map((e) => {
+        const payer = e.paidBy ?? e.createdBy ?? undefined;
+        return {
+          id: e.id,
+          name: e.name,
+          amount: e.amount,
+          currency: e.currency,
+          isSplit: e.splitType !== 'none' && e.splits.length > 1,
+          splitType: 'even' as const,
+          splitWith: e.splits.map((s) => s.userId).filter((u) => u !== payer),
+          createdBy: e.createdBy ?? undefined,
+          paidBy: e.paidBy ?? undefined,
+          createdAt: e.createdAt,
+        };
+      }),
+    [bundle?.expenses],
+  );
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
   const selectedDay = selectedDayId ? itineraryDays.find((d) => d.id === selectedDayId) : undefined;
   const [expandedDayIds, setExpandedDayIds] = useState<Set<string>>(new Set());
@@ -229,54 +260,51 @@ export default function TripDetailsScreen() {
         const msPerDay = 86400000;
         const totalDays = Math.round((end.getTime() - start.getTime()) / msPerDay) + 1;
 
-        if (sharedTrip) {
-          const days: ItineraryDay[] = Array.from({ length: totalDays }, (_, i) => {
-            const iso = new Date(start.getTime() + i * msPerDay).toISOString().slice(0, 10);
-            return { id: `day-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${i}`, label: `Day ${i + 1}`, date: iso, events: [] };
+        const days = Array.from({ length: totalDays }, (_, i) => {
+          const iso = new Date(start.getTime() + i * msPerDay).toISOString().slice(0, 10);
+          return {
+            label: `Day ${i + 1}`,
+            date: iso as string | null,
+            items: [] as {
+              name: string;
+              startTime: string | null;
+              endTime: string | null;
+              location: string | null;
+              notes: string | null;
+              tickets: TicketAttachment[];
+              estimatedCost: number | null;
+              costType: 'total' | 'per_person' | null;
+              currency: string | null;
+            }[],
+          };
+        });
+        const dateToDay = Object.fromEntries(days.map((d) => [d.date, d]));
+        for (const flight of flights) {
+          if (!flight.departureDate) continue;
+          const day = dateToDay[flight.departureDate];
+          if (!day) continue;
+          const from = flight.from ?? flight.fromCity ?? '';
+          const to = flight.to ?? flight.toCity ?? '';
+          const num = flight.flightNumber ?? '';
+          const airline = flight.airline ?? '';
+          const label = [airline, num, from && to ? `${from} → ${to}` : ''].filter(Boolean).join(' · ');
+          const endTime = flight.arrivalDate === flight.departureDate ? (flight.arrivalTime ?? null) : null;
+          day.items.push({
+            name: label || 'Flight',
+            startTime: flight.departureTime ?? '00:00',
+            endTime,
+            location: null,
+            notes: null,
+            tickets: [],
+            estimatedCost: null,
+            costType: null,
+            currency: null,
           });
-          const dateToDay: Record<string, ItineraryDay> = Object.fromEntries(days.map((d) => [d.date, d]));
-          for (const flight of flights) {
-            if (!flight.departureDate) continue;
-            const day = dateToDay[flight.departureDate];
-            if (!day) continue;
-            const from = flight.from ?? flight.fromCity ?? '';
-            const to = flight.to ?? flight.toCity ?? '';
-            const num = flight.flightNumber ?? '';
-            const airline = flight.airline ?? '';
-            const label = [airline, num, from && to ? `${from} → ${to}` : ''].filter(Boolean).join(' · ');
-            const endTime = flight.arrivalDate === flight.departureDate ? (flight.arrivalTime ?? undefined) : undefined;
-            day.events.push({
-              id: `event-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-              name: label || 'Flight',
-              time: flight.departureTime ?? '00:00',
-              endTime,
-            });
-          }
-          bulkSetSharedItineraryDays(sharedTrip.id, days);
-        } else {
-          const dateToDay: Record<string, ReturnType<typeof addItineraryDay>> = {};
-          for (let i = 0; i < totalDays; i++) {
-            const iso = new Date(start.getTime() + i * msPerDay).toISOString().slice(0, 10);
-            const day = addItineraryDay(tripId, `Day ${i + 1}`, iso);
-            dateToDay[iso] = day;
-          }
-
-          for (const flight of flights) {
-            if (!flight.departureDate) continue;
-            const day = dateToDay[flight.departureDate];
-            if (!day) continue;
-            const from = flight.from ?? flight.fromCity ?? '';
-            const to = flight.to ?? flight.toCity ?? '';
-            const num = flight.flightNumber ?? '';
-            const airline = flight.airline ?? '';
-            const label = [airline, num, from && to ? `${from} → ${to}` : ''].filter(Boolean).join(' · ');
-            const endTime = flight.arrivalDate === flight.departureDate ? (flight.arrivalTime ?? undefined) : undefined;
-            addItineraryEvent(tripId, day.id, label || 'Flight', flight.departureTime ?? '00:00', undefined, undefined, undefined, endTime);
-          }
         }
+        setItinerary(tripId, days);
       }
     }
-  }, [activeTab, tripId, trip?.startDate, trip?.endDate, itineraryDays.length, sharedTrip, addItineraryDay, addItineraryEvent, bulkSetSharedItineraryDays, flights]);
+  }, [activeTab, tripId, trip?.startDate, trip?.endDate, itineraryDays.length, setItinerary, flights]);
 
   const [showItineraryTips, setShowItineraryTips] = useState(false);
   const [itineraryTipIndex, setItineraryTipIndex] = useState(0);
@@ -591,7 +619,7 @@ export default function TripDetailsScreen() {
   // Show housing tip once, the first time the user has housing and visits overview.
   useEffect(() => {
     if (activeTab !== 'overview' || !tripId || overviewTipActiveRef.current) return;
-    const housing = tripId ? (sharedTrip ? (sharedTrip.housing ?? []) : (housingByTripId[tripId] ?? [])) : [];
+    const housing = bundle?.housing ?? [];
     if (housing.length === 0) return;
     const key = `ov_housing_tip_${tripId}`;
     AsyncStorage.getItem(key).then((val) => {
@@ -602,7 +630,7 @@ export default function TripDetailsScreen() {
         AsyncStorage.setItem(key, 'true');
       }
     });
-  }, [activeTab, tripId, sharedTrip, housingByTripId]);
+  }, [activeTab, tripId, bundle?.housing]);
 
   // Open / close.
   useEffect(() => {
@@ -859,20 +887,6 @@ export default function TripDetailsScreen() {
   const [paidByPickerVisible, setPaidByPickerVisible] = useState(false);
   const [allTransfersExpanded, setAllTransfersExpanded] = useState(false);
 
-  // ── Photos ──────────────────────────────────────────────────────────────
-  const [photosUploading, setPhotosUploading] = useState(false);
-  const [lightboxVisible, setLightboxVisible] = useState(false);
-  const [lightboxPhotos, setLightboxPhotos] = useState<PhotoEntry[]>([]);
-  const [lightboxIndex, setLightboxIndex] = useState(0);
-  const lightboxFlatRef = useRef<FlatList<PhotoEntry>>(null);
-  const [photoFilter, setPhotoFilter] = useState<'all' | 'favorites' | 'date' | 'day'>('all');
-
-  const [journalModalVisible, setJournalModalVisible] = useState(false);
-  const [journalDate, setJournalDate] = useState('');
-  const [journalText, setJournalText] = useState('');
-  const [journalError, setJournalError] = useState<string | null>(null);
-  const [journalIsShared, setJournalIsShared] = useState(false);
-
   const PEXELS_API_KEY = process.env.EXPO_PUBLIC_PEXELS_API_KEY;
   const heroCacheTtlMs = 1000 * 60 * 60 * 24 * 7;
   const [heroDisplayedUrl, setHeroDisplayedUrl] = useState<string | null>(null);
@@ -947,24 +961,31 @@ export default function TripDetailsScreen() {
     }
   }, [showStickyCard, stickyFadeAnim, stickyIconsFadeAnim]);
 
-  const [editingJournalEntryId, setEditingJournalEntryId] = useState<string | null>(null);
-
   const [overviewFlightsCollapsed, setOverviewFlightsCollapsed] = useState(false);
   const [overviewHousingCollapsed, setOverviewHousingCollapsed] = useState(false);
   const [overviewComingUpCollapsed, setOverviewComingUpCollapsed] = useState(false);
 
-  // Members from shared context
-  const tripPeople: TripPerson[] = sharedTrip
-    ? sharedTrip.members
-        .filter((m) => m.status === 'accepted')
-        .map((m) => ({
-          id: m.userId,
-          name: m.displayName || m.phone || '?',
-          avatarUri: m.avatarUri,
-        }))
+  const tripPeople: TripPerson[] = acceptedMembers.length
+    ? acceptedMembers.map((m) => ({
+        id: m.userId,
+        name: (m.userId === uid ? profileName : undefined) || m.displayName || m.phone || '?',
+        avatarUri: m.avatarUrl ?? undefined,
+      }))
     : [{ id: uid ?? 'me', name: profileName || 'Me', avatarUri: profileAvatarUrl ?? undefined }];
 
-  const tripHousing: TripHousing[] = tripId ? (sharedTrip ? (sharedTrip.housing ?? []) : (housingByTripId[tripId] ?? [])) : [];
+  const tripHousing: TripHousing[] = useMemo(
+    () =>
+      (bundle?.housing ?? []).map((h) => ({
+        id: h.id,
+        location: h.location,
+        startDate: h.startDate ?? '',
+        endDate: h.endDate ?? '',
+        checkInTime: h.checkInTime ?? undefined,
+        checkOutTime: h.checkOutTime ?? undefined,
+        earlyCheckInRequested: h.earlyCheckInRequested,
+      })),
+    [bundle?.housing],
+  );
 
   const [housingModalVisible, setHousingModalVisible] = useState(false);
   const [housingLocation, setHousingLocation] = useState('');
@@ -1043,20 +1064,11 @@ export default function TripDetailsScreen() {
     return () => { cancelled = true; };
   }, [trip?.destination]);
 
-  const ensureSharedTrip = async (): Promise<string> => {
-    let sharedId = sharedTrip?.id;
-    if (!sharedId) {
-      sharedId = await migrateToShared(trip!, flights, itineraryDays, expenses, tripHousing, journalEntries);
-    }
-    return sharedId;
-  };
-
   const handleShareLink = async () => {
     if (!tripId || !trip || isInviting) return;
     setIsInviting(true);
     try {
-      const sharedId = await ensureSharedTrip();
-      const token = await inviteToTrip(sharedId);
+      const token = await inviteToTrip(tripId);
       const link = `shmoves://invite/${token}`;
       await Share.share({
         message: `Join my trip to ${trip.destination} on Shmoves! ${link}`,
@@ -1078,8 +1090,7 @@ export default function TripDetailsScreen() {
         if (!cleaned) return;
         setIsInviting(true);
         try {
-          const sharedId = await ensureSharedTrip();
-          await inviteByUsername(sharedId, cleaned);
+          await inviteByUsername(tripId, cleaned);
           Alert.alert('Invited!', `@${cleaned} has been invited to this trip.`);
         } catch (err: any) {
           Alert.alert('Error', err.message || 'Could not send invite.');
@@ -1099,8 +1110,8 @@ export default function TripDetailsScreen() {
   };
 
   const handleInviteById = async (targetUserId: string) => {
-    const sharedId = await ensureSharedTrip();
-    await inviteByUserId(sharedId, targetUserId);
+    if (!tripId) return;
+    await inviteByUserId(tripId, targetUserId);
   };
 
   const openHousingModal = () => {
@@ -1596,83 +1607,6 @@ export default function TripDetailsScreen() {
     setExpenseModalVisible(true);
   };
 
-  // ── Photo upload ─────────────────────────────────────────────────────────
-  const handleAddPhotos = async () => {
-    if (!sharedTrip) return;
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Please allow access to your photo library.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsMultipleSelection: true,
-      quality: 0.8,
-      exif: true,
-    });
-    if (result.canceled || !result.assets.length) return;
-
-    setPhotosUploading(true);
-    try {
-      const cloudName = process.env.EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME!;
-      const uploadPreset = process.env.EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET!;
-
-      for (const asset of result.assets) {
-        const formData = new FormData();
-        formData.append('file', { uri: asset.uri, type: 'image/jpeg', name: 'photo.jpg' } as any);
-        formData.append('upload_preset', uploadPreset);
-
-        const response = await fetch(
-          `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
-          { method: 'POST', body: formData }
-        );
-        const data = await response.json();
-
-        if (!response.ok || !data.secure_url) {
-          throw new Error(data.error?.message ?? 'Cloudinary upload failed');
-        }
-
-        // Extract EXIF date if available.
-        // EXIF stores dates as "YYYY:MM:DD HH:MM:SS" — colons as date separators,
-        // which JS Date can't parse. Convert to ISO "YYYY-MM-DD HH:MM:SS" first.
-        const parseExifDate = (raw: string): string | undefined => {
-          try {
-            const iso = raw.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
-            const d = new Date(iso);
-            return isNaN(d.getTime()) ? undefined : d.toISOString();
-          } catch {
-            return undefined;
-          }
-        };
-        const exifDate: string | undefined =
-          parseExifDate(asset.exif?.DateTimeOriginal ?? '') ??
-          parseExifDate(asset.exif?.DateTime ?? '') ??
-          undefined;
-
-        await addSharedPhoto(sharedTrip.id, data.secure_url, exifDate);
-      }
-    } catch (e: any) {
-      Alert.alert('Upload failed', e?.message ?? JSON.stringify(e) ?? 'Something went wrong.');
-    } finally {
-      setPhotosUploading(false);
-    }
-  };
-
-  const openJournalModal = (entry?: { id: string; date: string; text: string; isShared?: boolean }) => {
-    if (entry) {
-      setEditingJournalEntryId(entry.id);
-      setJournalDate(entry.date);
-      setJournalText(entry.text);
-      setJournalIsShared(entry.isShared ?? false);
-    } else {
-      setEditingJournalEntryId(null);
-      setJournalDate(getTodayIsoDate());
-      setJournalText('');
-      setJournalIsShared(false);
-    }
-    setJournalError(null);
-    setJournalModalVisible(true);
-  };
 
   const openFlightModal = (existing?: {
     id: string;
@@ -2058,8 +1992,6 @@ export default function TripDetailsScreen() {
     { key: 'overview' as const, label: 'Overview' },
     { key: 'itinerary' as const, label: 'Itinerary' },
     { key: 'finances' as const, label: 'Finances' },
-    { key: 'photos' as const, label: 'Photos' },
-    { key: 'feed' as const, label: 'Feed' },
   ];
 
   const renderItineraryGrid = () => {
@@ -2229,7 +2161,7 @@ export default function TripDetailsScreen() {
         startOfToday.setHours(0, 0, 0, 0);
         const isOnTrip =
           daysUntilTrip <= 0 &&
-          tripEndDateObj !== null &&
+          tripEndDateObj != null &&
           new Date(tripEndDateObj.getFullYear(), tripEndDateObj.getMonth(), tripEndDateObj.getDate()) >= startOfToday;
         const now = new Date();
         const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -2246,38 +2178,6 @@ export default function TripDetailsScreen() {
                     ? 'You fly out tomorrow!'
                     : `There are ${daysUntilTrip} days until the trip!`}
             </ThemedText>
-
-            {tripId && trip ? (
-              <>
-                <TripPrivacyCard
-                  tripId={sharedTrip ? sharedTrip.id : tripId}
-                  source={sharedTrip ? 'shared' : 'personal'}
-                  isPublic={sharedTrip ? sharedTrip.isPublic : trip.isPublic !== false}
-                  canEdit={sharedTrip ? sharedTrip.members.some((m) => m.userId === uid && m.status === 'accepted') : true}
-                />
-                <Pressable
-                  onPress={() => {
-                    const src = sharedTrip ? 'shared' : 'personal';
-                    const id = sharedTrip ? sharedTrip.id : tripId;
-                    router.push({ pathname: '/compose-post', params: { source: src, tripId: id } } as any);
-                  }}
-                  style={{
-                    marginHorizontal: 16,
-                    borderRadius: 14,
-                    paddingVertical: 12,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexDirection: 'row',
-                    gap: 8,
-                    backgroundColor: colors.primary,
-                  }}>
-                  <IconSymbol name="paperplane.fill" size={16} color="#fff" />
-                  <ThemedText style={{ color: '#fff', fontSize: 14, fontWeight: '800' }}>
-                    Share to Shmovements
-                  </ThemedText>
-                </Pressable>
-              </>
-            ) : null}
 
             <ThemedView style={[styles.flightCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
               <View ref={overviewFlightsHeaderRef} collapsable={false}>
@@ -2389,7 +2289,7 @@ export default function TripDetailsScreen() {
                                       if (!tripId) return;
                                       Alert.alert('Remove flight?', 'This cannot be undone.', [
                                         { text: 'Cancel', style: 'cancel' },
-                                        { text: 'Remove', style: 'destructive', onPress: () => sharedTrip ? deleteSharedFlight(sharedTrip.id, f.id) : deleteFlight(tripId, f.id) },
+                                        { text: 'Remove', style: 'destructive', onPress: () => deleteFlight(tripId, f.id) },
                                       ]);
                                     }}>
                                     <ThemedText
@@ -2493,7 +2393,7 @@ export default function TripDetailsScreen() {
                             if (!tripId) return;
                             Alert.alert('Remove housing?', 'This cannot be undone.', [
                               { text: 'Cancel', style: 'cancel' },
-                              { text: 'Remove', style: 'destructive', onPress: () => sharedTrip ? deleteSharedHousing(sharedTrip.id, h.id) : deleteHousing(tripId, h.id) },
+                              { text: 'Remove', style: 'destructive', onPress: () => deleteHousing(tripId, h.id) },
                             ]);
                           }}>
                           <ThemedText style={[styles.housingDeleteText, { color: colors.destructive }]}>Remove</ThemedText>
@@ -2508,7 +2408,7 @@ export default function TripDetailsScreen() {
 
               <Modal visible={housingModalVisible} transparent animationType="fade">
                 <View style={styles.modalOverlay}>
-                  <View style={[styles.modalCard, styles.flightModalCard, { backgroundColor: colors.surface }]}>
+                  <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
                     <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent} showsVerticalScrollIndicator={false}>
                       <ThemedText style={styles.modalTitle}>Add Housing</ThemedText>
 
@@ -2659,19 +2559,14 @@ export default function TripDetailsScreen() {
                               setHousingError('Please select a start and end date.');
                               return;
                             }
-                            const housingPayload = {
+                            addHousing(tripId, {
                               location: loc,
                               startDate: housingStartDate!,
                               endDate: housingEndDate!,
-                              checkInTime: housingCheckIn.trim() || undefined,
-                              checkOutTime: housingCheckOut.trim() || undefined,
-                              earlyCheckInRequested: housingEarlyCheckIn || undefined,
-                            };
-                            if (sharedTrip) {
-                              addSharedHousing(sharedTrip.id, housingPayload);
-                            } else {
-                              addHousing(tripId, housingPayload);
-                            }
+                              checkInTime: housingCheckIn.trim() || null,
+                              checkOutTime: housingCheckOut.trim() || null,
+                              earlyCheckInRequested: housingEarlyCheckIn,
+                            });
                             setHousingModalVisible(false);
                             setHousingError(null);
                           }}>
@@ -3131,41 +3026,33 @@ export default function TripDetailsScreen() {
                                 segment: 'auto' as const,
                                 departureDate: depDate,
                                 departureTime: depTime,
-                                arrivalDate: flightArrivalDate.trim() || undefined,
-                                arrivalTime: flightArrivalTime.trim() || undefined,
-                                airline: flightAirline.trim() || undefined,
-                                flightNumber: flightNumber.trim() || undefined,
-                                from: flightFrom.trim() || undefined,
-                                fromCity: flightFromCity.trim() || undefined,
-                                to: flightTo.trim() || undefined,
-                                toCity: flightToCity.trim() || undefined,
+                                arrivalDate: flightArrivalDate.trim() || null,
+                                arrivalTime: flightArrivalTime.trim() || null,
+                                airline: flightAirline.trim() || null,
+                                flightNumber: flightNumber.trim() || null,
+                                fromAirport: flightFrom.trim() || null,
+                                fromCity: flightFromCity.trim() || null,
+                                toAirport: flightTo.trim() || null,
+                                toCity: flightToCity.trim() || null,
                               };
                               if (editingFlightId) {
-                                if (sharedTrip) {
-                                  sharedTrip && updateSharedFlight(sharedTrip.id, editingFlightId, payload);
-                                } else {
-                                  updateFlight(tripId, editingFlightId, payload);
-                                }
+                                updateFlight(tripId, editingFlightId, payload);
                               } else {
-                                if (sharedTrip) {
-                                  addSharedFlight(sharedTrip.id, payload);
-                                } else {
-                                  addFlight(tripId, payload);
-                                }
+                                addFlight(tripId, payload);
                                 // Sync a new itinerary event for the flight on the matching day
                                 const matchingDay = itineraryDays.find((d) => d.date === depDate);
                                 if (matchingDay) {
-                                  const from = payload.from ?? payload.fromCity ?? '';
-                                  const to = payload.to ?? payload.toCity ?? '';
+                                  const from = payload.fromAirport ?? payload.fromCity ?? '';
+                                  const to = payload.toAirport ?? payload.toCity ?? '';
                                   const num = payload.flightNumber ?? '';
                                   const airline = payload.airline ?? '';
                                   const eventLabel = [airline, num, from && to ? `${from} → ${to}` : ''].filter(Boolean).join(' · ');
-                                  const eventEndTime = payload.arrivalDate === depDate ? (payload.arrivalTime ?? undefined) : undefined;
-                                  if (sharedTrip) {
-                                    addSharedItineraryEvent(sharedTrip.id, matchingDay.id, eventLabel || 'Flight', depTime, undefined, undefined, undefined, eventEndTime);
-                                  } else {
-                                    addItineraryEvent(tripId, matchingDay.id, eventLabel || 'Flight', depTime, undefined, undefined, undefined, eventEndTime);
-                                  }
+                                  const eventEndTime = payload.arrivalDate === depDate ? payload.arrivalTime : null;
+                                  addItineraryItem(tripId, matchingDay.id, {
+                                    name: eventLabel || 'Flight',
+                                    startTime: depTime,
+                                    endTime: eventEndTime,
+                                  });
                                 }
                               }
                               setFlightModalVisible(false);
@@ -3314,7 +3201,7 @@ export default function TripDetailsScreen() {
                                                 {
                                                   text: 'Delete',
                                                   style: 'destructive',
-                                                  onPress: () => sharedTrip ? deleteSharedItineraryEvent(sharedTrip.id, day.id, e.id) : deleteItineraryEvent(tripId, day.id, e.id),
+                                                  onPress: () => deleteItineraryItem(tripId, day.id, e.id),
                                                 },
                                               ]);
                                             }}>
@@ -3325,7 +3212,7 @@ export default function TripDetailsScreen() {
                                     </View>
 
                                     {e.notes ? (
-                                      <ThemedText style={[styles.eventNotes, { color: colors.textMuted }]}>{e.notes}</ThemedText>
+                                      <ThemedText style={[styles.eventNotes, { color: colors.icon }]}>{e.notes}</ThemedText>
                                     ) : null}
 
                                     {e.location ? (
@@ -3458,7 +3345,7 @@ export default function TripDetailsScreen() {
                       onPress={() => {
                         if (!tripId || !editingDayId) return;
                         const label = dayName.trim();
-                        sharedTrip ? updateSharedItineraryDay(sharedTrip.id, editingDayId, label) : updateItineraryDay(tripId, editingDayId, label);
+                        updateItineraryDay(tripId, editingDayId, label);
                         setDayModalVisible(false);
                         setDayName('');
                         setEditingDayId(null);
@@ -3655,32 +3542,18 @@ export default function TripDetailsScreen() {
                           return;
                         }
 
+                        const itemInput = {
+                          name,
+                          startTime: time,
+                          endTime: endTime24 ?? null,
+                          location: location || null,
+                          notes: notes || null,
+                          tickets: eventTickets,
+                        };
                         if (editingEventId) {
-                          if (sharedTrip) {
-                            updateSharedItineraryEvent(sharedTrip.id, selectedDayId, editingEventId, {
-                              name,
-                              time,
-                              location: location ? location : undefined,
-                              notes: notes ? notes : undefined,
-                              tickets: eventTickets,
-                              endTime: endTime24,
-                            });
-                          } else {
-                            updateItineraryEvent(tripId, selectedDayId, editingEventId, {
-                              name,
-                              time,
-                              location: location ? location : undefined,
-                              notes: notes ? notes : undefined,
-                              tickets: eventTickets,
-                              endTime: endTime24,
-                            });
-                          }
+                          updateItineraryItem(tripId, selectedDayId, editingEventId, itemInput);
                         } else {
-                          if (sharedTrip) {
-                            addSharedItineraryEvent(sharedTrip.id, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets, endTime24);
-                          } else {
-                            addItineraryEvent(tripId, selectedDayId, name, time, location ? location : undefined, notes ? notes : undefined, eventTickets, endTime24);
-                          }
+                          addItineraryItem(tripId, selectedDayId, itemInput);
                         }
 
                         setEventModalVisible(false);
@@ -3729,7 +3602,7 @@ export default function TripDetailsScreen() {
                 const myShareByCurrency = expenses.reduce<Record<string, number>>((acc, e) => {
                   const currency = e.currency || 'USD';
                   const payer = e.paidBy ?? e.createdBy;
-                  const isPayer = !sharedTrip || payer === uid || !payer;
+                  const isPayer = !isSharedTrip || payer === uid || !payer;
                   const isSplitWithMe = e.splitWith?.includes(uid ?? '') ?? false;
                   let share = 0;
                   if (e.isSplit && e.splitType === 'even' && e.splitWith && e.splitWith.length > 0) {
@@ -3780,7 +3653,7 @@ export default function TripDetailsScreen() {
             {(() => {
               const myExpenses = expenses.filter((e) => {
                 const payer = e.paidBy ?? e.createdBy;
-                const isPayer = !sharedTrip || payer === uid || !payer;
+                const isPayer = !isSharedTrip || payer === uid || !payer;
                 const isSplitWithMe = e.splitWith?.includes(uid ?? '') ?? false;
                 return isPayer || isSplitWithMe;
               });
@@ -3876,7 +3749,7 @@ export default function TripDetailsScreen() {
                                 {
                                   text: 'Delete',
                                   style: 'destructive',
-                                  onPress: () => sharedTrip ? deleteSharedExpense(sharedTrip.id, e.id) : deleteExpense(tripId, e.id),
+                                  onPress: () => deleteExpense(tripId, e.id),
                                 },
                               ]);
                             }}>
@@ -3897,80 +3770,36 @@ export default function TripDetailsScreen() {
             );
             })()}
 
-            {/* Settle Up — only for shared trips with 2+ accepted members */}
+            {/* Settle Up — only for trips with 2+ accepted members */}
             {(() => {
-              if (!sharedTrip) return null;
+              if (!isSharedTrip || !bundle || !tripId) return null;
               const members = tripPeople;
               if (members.length < 2) return null;
 
-              const splitExpenses = expenses.filter((e) =>
-                e.isSplit && e.splitType === 'even' && e.splitWith && e.splitWith.length > 0
+              const splitExpenses = bundle.expenses.filter(
+                (e) => e.splitType !== 'none' && e.splits.length > 1,
               );
               if (!splitExpenses.length) return null;
 
-              // Net balance per member (positive = owed money; negative = owes money)
-              const balances: Record<string, number> = {};
-              for (const m of members) balances[m.id] = 0;
-
-              let skippedCount = 0;
-              const skippedCurrencies = new Set<string>();
-              for (const e of splitExpenses) {
-                const payer = e.paidBy ?? e.createdBy;
-                if (!payer || !Object.prototype.hasOwnProperty.call(balances, payer)) { skippedCount++; continue; }
-                const converted = convertToHome(e.amount, e.currency || homeCurrency);
-                if (converted === null) {
-                  skippedCount++;
-                  skippedCurrencies.add(e.currency || '?');
-                  continue;
-                }
-                const validOthers = (e.splitWith ?? []).filter(
-                  (id) => id !== payer && Object.prototype.hasOwnProperty.call(balances, id),
-                );
-                const participants = [payer, ...validOthers];
-                const n = participants.length;
-                if (n < 2) continue;
-                const share = converted / n;
-                balances[payer] += converted - share;
-                for (const pid of validOthers) balances[pid] -= share;
-              }
-
-              // Greedy min-transfer matching
-              const EPS = 0.01;
-              const creditors = Object.entries(balances)
-                .filter(([, v]) => v > EPS)
-                .map(([id, v]) => ({ id, amount: v }))
-                .sort((a, b) => b.amount - a.amount);
-              const debtors = Object.entries(balances)
-                .filter(([, v]) => v < -EPS)
-                .map(([id, v]) => ({ id, amount: -v }))
-                .sort((a, b) => b.amount - a.amount);
-
-              const transfers: { from: string; to: string; amount: number }[] = [];
-              let ci = 0, di = 0;
-              while (ci < creditors.length && di < debtors.length) {
-                const cr = creditors[ci];
-                const dr = debtors[di];
-                const pay = Math.min(cr.amount, dr.amount);
-                if (pay > EPS) {
-                  transfers.push({ from: dr.id, to: cr.id, amount: pay });
-                }
-                cr.amount -= pay;
-                dr.amount -= pay;
-                if (cr.amount < EPS) ci++;
-                if (dr.amount < EPS) di++;
-              }
+              // Balance math lives in @shmoves/core so web and phone can
+              // never disagree (ADR 0006).
+              const { balances, skippedCount, skippedCurrencies } = computeBalances(
+                splitExpenses,
+                members.map((m) => m.id),
+                (amount, currency) => convertToHome(amount, currency || homeCurrency),
+              );
+              const transfers = computeTransfers(balances);
 
               const nameOf = (id: string) =>
                 id === uid ? 'You' : (members.find((m) => m.id === id)?.name ?? '—');
 
-              const settlements = sharedTrip.settlements ?? [];
-              const isSettled = (from: string, to: string) =>
-                settlements.some((s) => s.from === from && s.to === to);
+              const settlements = bundle.settlements;
+              const isSettled = (from: string, to: string) => isPairSettled(settlements, from, to);
               const toggleSettlement = (from: string, to: string) => {
                 if (isSettled(from, to)) {
-                  unmarkSettled(sharedTrip.id, from, to);
+                  unmarkSettled(tripId, from, to);
                 } else {
-                  markSettled(sharedTrip.id, from, to);
+                  markSettled(tripId, from, to);
                 }
               };
 
@@ -4023,7 +3852,7 @@ export default function TripDetailsScreen() {
                   {skippedCount > 0 && (
                     <ThemedText style={[styles.financeMeta, { color: colors.icon, marginBottom: 8 }]}>
                       {skippedCount === 1 ? '1 expense' : `${skippedCount} expenses`}
-                      {skippedCurrencies.size > 0 ? ` in ${Array.from(skippedCurrencies).join(', ')}` : ''}
+                      {skippedCurrencies.length > 0 ? ` in ${skippedCurrencies.join(', ')}` : ''}
                       {' couldn\'t be converted — rate unavailable.'}
                     </ThemedText>
                   )}
@@ -4126,8 +3955,8 @@ export default function TripDetailsScreen() {
                     );
                   })()}
 
-                  {/* Paid by — only for shared trips */}
-                  {sharedTrip && (
+                  {/* Paid by — only useful with 2+ members */}
+                  {isSharedTrip && (
                     <Pressable
                       style={[styles.checkboxRow, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
                       onPress={() => setPaidByPickerVisible(true)}>
@@ -4325,43 +4154,23 @@ export default function TripDetailsScreen() {
                           return;
                         }
 
-                        const isSplit = splitMode !== 'none';
-                        const splitType: 'even' | undefined = splitMode === 'even' ? 'even' : undefined;
-
+                        // Participants include the payer (canonical split model).
+                        const effectivePayer = paidBy ?? uid ?? null;
+                        const participantIds =
+                          splitMode === 'even' && effectivePayer
+                            ? [effectivePayer, ...splitWith.filter((pid) => pid !== effectivePayer)]
+                            : [];
+                        const expenseInput = {
+                          name: expenseName.trim(),
+                          amount,
+                          currency,
+                          paidBy: effectivePayer,
+                          participantIds,
+                        };
                         if (editingExpenseId) {
-                          const effectivePayer = paidBy ?? uid ?? undefined;
-                          const cleanedSplitWith = splitMode === 'even' ? splitWith.filter((id) => id !== effectivePayer) : [];
-                          const expenseUpdates = {
-                            name: expenseName.trim(),
-                            amount,
-                            currency,
-                            isSplit,
-                            splitType,
-                            splitWith: cleanedSplitWith,
-                            paidBy: effectivePayer,
-                          };
-                          if (sharedTrip) {
-                            updateSharedExpense(sharedTrip.id, editingExpenseId, expenseUpdates);
-                          } else {
-                            updateExpense(tripId, editingExpenseId, expenseUpdates);
-                          }
+                          updateExpense(tripId, editingExpenseId, expenseInput);
                         } else {
-                          const effectivePayerNew = paidBy ?? uid ?? undefined;
-                          const cleanedSplitWithNew = splitMode === 'even' ? splitWith.filter((id) => id !== effectivePayerNew) : [];
-                          const newExpense = {
-                            name: expenseName.trim(),
-                            amount,
-                            currency,
-                            isSplit,
-                            splitType,
-                            splitWith: cleanedSplitWithNew,
-                            paidBy: effectivePayerNew,
-                          };
-                          if (sharedTrip) {
-                            addSharedExpense(sharedTrip.id, newExpense);
-                          } else {
-                            addExpense(tripId, newExpense);
-                          }
+                          addExpense(tripId, expenseInput);
                         }
 
                         setExpenseModalVisible(false);
@@ -4376,312 +4185,6 @@ export default function TripDetailsScreen() {
             </Modal>
           </ThemedView>
         );
-      case 'feed':
-        return (
-          <ThemedView style={styles.tabContent}>
-            <ThemedText style={styles.sectionTitle}>Feed</ThemedText>
-            {sharedTrip && sharedTrip.feed?.length > 0 ? (
-              <ThemedView style={styles.journalList}>
-                {sharedTrip.feed.map((entry) => {
-                  const actor = sharedTrip.members.find((m) => m.userId === entry.actorId);
-                  const actorName = actor?.displayName || actor?.phone || 'Someone';
-                  const timeAgo = (() => {
-                    const diff = Date.now() - new Date(entry.timestamp).getTime();
-                    const mins = Math.floor(diff / 60000);
-                    if (mins < 1) return 'just now';
-                    if (mins < 60) return `${mins}m ago`;
-                    const hrs = Math.floor(mins / 60);
-                    if (hrs < 24) return `${hrs}h ago`;
-                    return `${Math.floor(hrs / 24)}d ago`;
-                  })();
-                  return (
-                    <View key={entry.id} style={[styles.journalCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-                      <View style={styles.journalHeaderRow}>
-                        <ThemedText style={[styles.journalDate, { color: colors.text, flex: 1 }]}>
-                          <ThemedText style={{ fontWeight: '700' }}>{actorName}</ThemedText>
-                          {` ${entry.action} `}
-                          <ThemedText style={{ color: colors.primary }}>{entry.section}</ThemedText>
-                          {entry.detail ? `: ${entry.detail}` : ''}
-                        </ThemedText>
-                        <ThemedText style={[styles.journalDate, { color: colors.icon, flexShrink: 0 }]}>{timeAgo}</ThemedText>
-                      </View>
-                    </View>
-                  );
-                })}
-              </ThemedView>
-            ) : (
-              <ThemedText style={styles.emptyText}>
-                {sharedTrip ? 'No activity yet. Changes made to this trip will appear here.' : 'Feed is only available for shared trips.'}
-              </ThemedText>
-            )}
-          </ThemedView>
-        );
-      case 'photos': {
-        const allPhotos = sharedTrip?.photos ?? [];
-        const PHOTO_GAP = 2;
-        const screenW = Dimensions.get('window').width;
-        // Break out of the 24px horizontal padding on `styles.content` → full-width grid
-        const PHOTO_SIZE = Math.floor((screenW - PHOTO_GAP * 4) / 3);
-
-        const uniqueLiked = new Set(allPhotos.flatMap((p) => p.favoritedBy ?? [])).size;
-
-        // Apply filter + sort
-        const filteredPhotos = (() => {
-          let list = [...allPhotos];
-          if (photoFilter === 'favorites') {
-            list = list.filter((p) => p.favoritedBy?.includes(uid ?? ''));
-          }
-          if (photoFilter === 'day') {
-            list.sort((a, b) => {
-              const da = a.takenAt ?? a.timestamp;
-              const db = b.takenAt ?? b.timestamp;
-              return da.localeCompare(db);
-            });
-          } else {
-            list.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-          }
-          return list;
-        })();
-
-        // Group by date label
-        const grouped: { label: string; items: PhotoEntry[]; startIndex: number }[] = [];
-        let runningIdx = 0;
-        filteredPhotos.forEach((p) => {
-          const dateStr = photoFilter === 'day' ? (p.takenAt ?? p.timestamp) : p.timestamp;
-          const label = new Date(dateStr).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-          const last = grouped[grouped.length - 1];
-          if (last && last.label === label) {
-            last.items.push(p);
-          } else {
-            grouped.push({ label, items: [p], startIndex: runningIdx });
-          }
-          runningIdx++;
-        });
-
-        const currentLightboxPhoto = lightboxPhotos[lightboxIndex] ?? null;
-
-        return (
-          <ThemedView style={[styles.tabContent, { marginHorizontal: -24, paddingTop: 8 }]}>
-            {/* Add Photos header row */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 14 }}>
-              <ThemedText style={{ flex: 1, fontSize: 13, color: colors.icon, paddingRight: 12 }}>
-                Upload photos to share with the group!
-              </ThemedText>
-              <Pressable
-                onPress={handleAddPhotos}
-                style={[
-                  styles.globalPlusButton,
-                  styles.globalPlusButtonPill,
-                  { position: 'relative', top: 0, right: 0, backgroundColor: colors.surface, borderColor: colors.border },
-                ]}>
-                <IconSymbol name="plus" size={20} color={colors.primary} />
-                <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
-                  Add Photos
-                </ThemedText>
-              </Pressable>
-            </View>
-
-            {/* Filter bar */}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={{ marginBottom: 8 }}
-              contentContainerStyle={{ gap: 8, paddingHorizontal: 20 }}>
-              {(['all', 'favorites', 'date', 'day'] as const).map((f) => (
-                <Pressable
-                  key={f}
-                  onPress={() => setPhotoFilter(f)}
-                  style={[{ paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, borderWidth: 1 },
-                    photoFilter === f
-                      ? { backgroundColor: colors.primary, borderColor: colors.primary }
-                      : { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                  <ThemedText style={{ fontSize: 13, fontWeight: '600', color: photoFilter === f ? '#fff' : colors.text }}>
-                    {f === 'all' ? 'All' : f === 'favorites' ? '♥ Favorites' : f === 'date' ? 'Date Uploaded' : 'Day Taken'}
-                  </ThemedText>
-                </Pressable>
-              ))}
-            </ScrollView>
-
-            {/* Summary line — only shown when there are photos */}
-            {allPhotos.length > 0 && (
-              <View style={{ paddingHorizontal: 20, marginBottom: 10 }}>
-                <ThemedText style={{ fontSize: 12, color: colors.icon }}>
-                  {`${allPhotos.length} photo${allPhotos.length !== 1 ? 's' : ''}${uniqueLiked > 0 ? ` · ${uniqueLiked} liked by the group` : ''}`}
-                </ThemedText>
-              </View>
-            )}
-
-            {photosUploading && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10, paddingHorizontal: 20 }}>
-                <ActivityIndicator size="small" color={colors.primary} />
-                <ThemedText style={{ color: colors.icon, fontSize: 13 }}>Uploading…</ThemedText>
-              </View>
-            )}
-
-            {filteredPhotos.length === 0 && !photosUploading ? (
-              <View style={{ paddingHorizontal: 20 }}>
-                <ThemedText style={styles.emptyText}>
-                  {photoFilter === 'favorites' ? 'No favorites yet. Tap ♥ on any photo.' : 'No photos yet. Tap + to add some.'}
-                </ThemedText>
-              </View>
-            ) : (
-              grouped.map((group) => (
-                <View key={group.label} style={{ marginBottom: 16 }}>
-                  <ThemedText style={{ fontSize: 12, fontWeight: '600', color: colors.icon, marginBottom: 4, paddingHorizontal: 20 }}>
-                    {group.label}
-                  </ThemedText>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: PHOTO_GAP, paddingHorizontal: PHOTO_GAP }}>
-                    {group.items.map((p, localIdx) => (
-                      <PhotoTile
-                        key={p.id}
-                        photo={p}
-                        size={PHOTO_SIZE}
-                        colors={colors}
-                        tripPeople={tripPeople}
-                        onPress={() => {
-                          setLightboxPhotos(filteredPhotos);
-                          setLightboxIndex(group.startIndex + localIdx);
-                          setLightboxVisible(true);
-                        }}
-                        onLongPress={() => {
-                          setLightboxPhotos(filteredPhotos);
-                          setLightboxIndex(group.startIndex + localIdx);
-                          setLightboxVisible(true);
-                        }}
-                      />
-                    ))}
-                  </View>
-                </View>
-              ))
-            )}
-
-            {/* Lightbox Modal */}
-            <Modal visible={lightboxVisible} transparent animationType="fade" statusBarTranslucent>
-              <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.97)' }}>
-                {/* Header row */}
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 56, paddingHorizontal: 20, paddingBottom: 8 }}>
-                  <ThemedText style={{ color: '#666', fontSize: 13 }}>
-                    {lightboxIndex + 1} / {lightboxPhotos.length}
-                  </ThemedText>
-                  <Pressable style={{ padding: 8 }} onPress={() => setLightboxVisible(false)}>
-                    <IconSymbol name="xmark" size={22} color="#fff" />
-                  </Pressable>
-                </View>
-
-                {/* Swipeable image pager */}
-                <FlatList<PhotoEntry>
-                  ref={lightboxFlatRef}
-                  data={lightboxPhotos}
-                  horizontal
-                  pagingEnabled
-                  showsHorizontalScrollIndicator={false}
-                  initialScrollIndex={lightboxIndex}
-                  keyExtractor={(item) => item.id}
-                  getItemLayout={(_, index) => ({ length: screenW, offset: screenW * index, index })}
-                  onMomentumScrollEnd={(e) => {
-                    const newIdx = Math.round(e.nativeEvent.contentOffset.x / screenW);
-                    setLightboxIndex(newIdx);
-                  }}
-                  style={{ flex: 1 }}
-                  renderItem={({ item }) => (
-                    <View style={{ width: screenW, flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                      <ExpoImage
-                        source={{ uri: item.path }}
-                        style={{ width: screenW, height: screenW * 1.25 }}
-                        contentFit="contain"
-                        cachePolicy="memory-disk"
-                      />
-                      <View style={{ marginTop: 10, alignItems: 'center', gap: 2 }}>
-                        <ThemedText style={{ color: '#ccc', fontSize: 13 }}>
-                          {tripPeople.find((p) => p.id === item.uploadedBy)?.name ?? 'Unknown'}
-                        </ThemedText>
-                        <ThemedText style={{ color: '#555', fontSize: 12 }}>
-                          {new Date(item.takenAt ?? item.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-                        </ThemedText>
-                      </View>
-                    </View>
-                  )}
-                />
-
-                {/* Action bar */}
-                {currentLightboxPhoto && (
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingTop: 22, paddingBottom: 22 + insets.bottom, paddingHorizontal: 32, borderTopWidth: 1, borderTopColor: '#222' }}>
-                    {/* Favorite */}
-                    <Pressable
-                      style={{ alignItems: 'center', gap: 4 }}
-                      onPress={async () => {
-                        if (!sharedTrip) return;
-                        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                        toggleFavoritePhoto(sharedTrip.id, currentLightboxPhoto.id);
-                        // Optimistically update local copy so UI reflects immediately
-                        setLightboxPhotos((prev) =>
-                          prev.map((ph) => {
-                            if (ph.id !== currentLightboxPhoto.id) return ph;
-                            const already = ph.favoritedBy?.includes(uid ?? '') ?? false;
-                            return {
-                              ...ph,
-                              favoritedBy: already
-                                ? (ph.favoritedBy ?? []).filter((x) => x !== uid)
-                                : [...(ph.favoritedBy ?? []), uid ?? ''],
-                            };
-                          })
-                        );
-                      }}>
-                      <IconSymbol
-                        name={currentLightboxPhoto.favoritedBy?.includes(uid ?? '') ? 'heart.fill' : 'heart'}
-                        size={30}
-                        color={currentLightboxPhoto.favoritedBy?.includes(uid ?? '') ? '#ff4d6d' : '#fff'}
-                      />
-                      <ThemedText style={{ color: '#aaa', fontSize: 11 }}>
-                        {(currentLightboxPhoto.favoritedBy?.length ?? 0) > 0
-                          ? `${currentLightboxPhoto.favoritedBy!.length} liked`
-                          : 'Like'}
-                      </ThemedText>
-                    </Pressable>
-
-                    {/* Save */}
-                    <Pressable
-                      style={{ alignItems: 'center', gap: 4 }}
-                      onPress={async () => {
-                        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        Linking.openURL(currentLightboxPhoto.path);
-                      }}>
-                      <IconSymbol name="arrow.down.circle" size={30} color="#fff" />
-                      <ThemedText style={{ color: '#aaa', fontSize: 11 }}>Save</ThemedText>
-                    </Pressable>
-
-                    {/* Delete */}
-                    <Pressable
-                      style={{ alignItems: 'center', gap: 4 }}
-                      onPress={() => {
-                        Alert.alert('Delete photo?', 'This cannot be undone.', [
-                          { text: 'Cancel', style: 'cancel' },
-                          {
-                            text: 'Delete', style: 'destructive', onPress: async () => {
-                              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                              if (!sharedTrip) return;
-                              deleteSharedPhoto(sharedTrip.id, currentLightboxPhoto.id);
-                              const next = lightboxPhotos.filter((ph) => ph.id !== currentLightboxPhoto.id);
-                              if (next.length === 0) {
-                                setLightboxVisible(false);
-                              } else {
-                                setLightboxPhotos(next);
-                                setLightboxIndex((i) => Math.min(i, next.length - 1));
-                              }
-                            },
-                          },
-                        ]);
-                      }}>
-                      <IconSymbol name="trash" size={28} color="#ff4d6d" />
-                      <ThemedText style={{ color: '#aaa', fontSize: 11 }}>Delete</ThemedText>
-                    </Pressable>
-                  </View>
-                )}
-              </View>
-            </Modal>
-          </ThemedView>
-        );
-      }
     }
   };
 
@@ -4922,7 +4425,7 @@ export default function TripDetailsScreen() {
           </ThemedView>
 
           <View style={styles.globalEditOverlay} pointerEvents="box-none">
-            {activeTab === 'overview' || activeTab === 'feed' || activeTab === 'photos' || activeTab === 'itinerary' ? null : (
+            {activeTab !== 'finances' ? null : (
               <Pressable
                 style={[
                   styles.globalPlusButton,
@@ -4931,25 +4434,12 @@ export default function TripDetailsScreen() {
                 ]}
                 onPress={() => {
                   if (!tripId) return;
-                  if (activeTab === 'finances') {
-                    openExpenseModal();
-                    return;
-                  }
-                  if (activeTab === 'photos') {
-                    handleAddPhotos();
-                    return;
-                  }
+                  openExpenseModal();
                 }}>
                 <IconSymbol name="plus" size={22} color={colors.primary} />
-                {activeTab === 'finances' ? (
-                  <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
-                    Add Expense
-                  </ThemedText>
-                ) : activeTab === 'photos' ? (
-                  <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
-                    Add Photos
-                  </ThemedText>
-                ) : null}
+                <ThemedText numberOfLines={1} style={[styles.globalPlusLabel, { color: colors.primary }]}>
+                  Add Expense
+                </ThemedText>
               </Pressable>
             )}
           </View>
@@ -5031,7 +4521,7 @@ export default function TripDetailsScreen() {
       <TripInviteSheet
         visible={inviteSheetVisible}
         onClose={() => setInviteSheetVisible(false)}
-        existingMemberIds={new Set(sharedTrip?.members.map((m) => m.userId) ?? [])}
+        existingMemberIds={new Set(bundle?.members.map((m) => m.userId) ?? [])}
         onInviteById={handleInviteById}
         onShareLink={handleShareLink}
       />

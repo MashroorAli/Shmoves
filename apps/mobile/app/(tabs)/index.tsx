@@ -1,7 +1,7 @@
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { router } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -114,10 +114,17 @@ export default function HomeScreen() {
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
 
+    // Local calendar date, not toISOString() — UTC conversion can shift the
+    // picked day for users east of UTC.
+    const toLocalIsoDate = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
     addTrip({
       destination: destination.trim(),
-      startDate: startDate ? startDate.toISOString() : '',
-      endDate: endDate ? endDate.toISOString() : '',
+      startDate: startDate ? toLocalIsoDate(startDate) : null,
+      endDate: endDate ? toLocalIsoDate(endDate) : null,
+    }).catch((err) => {
+      Alert.alert('Error', err.message || 'Could not create the trip.');
     });
 
     router.push('/my-trips');
