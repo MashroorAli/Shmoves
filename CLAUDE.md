@@ -2,86 +2,79 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository Layout (npm workspaces monorepo)
+
+- `apps/mobile` — the Expo app
+- `apps/web` — Next.js web app (Phase 2, not yet created)
+- `packages/core` — shared TypeScript source (`@shmoves/core`): schema types, data access, finance math. Consumed as raw TS; Metro transpiles it for mobile, Next.js will use `transpilePackages`.
+- `supabase/` — SQL migrations and edge functions
+- `docs/adr/` — architecture decision records. **Read all ADRs before making structural changes.** `docs/apple-user-migration.md` tracks the Apple→email auth migration.
+
 ## Commands
 
 ```bash
-npm install          # install dependencies
-npx expo start       # start dev server (Expo Go or dev client)
-npx expo run:ios     # run on iOS simulator
-npx expo run:android # run on Android emulator/device
-npm run lint         # run ESLint via expo lint
+npm install          # install all workspaces (run at repo root)
+npm run start        # expo start (proxied to apps/mobile)
+npm run ios          # expo run:ios
+npm run android      # expo run:android
+npm run lint         # eslint via expo lint
+npx tsc --noEmit     # typecheck (run inside apps/mobile or packages/core)
 ```
 
-EAS builds are configured in `eas.json`. The app bundle identifier is `com.shmoves.app` (iOS) and `com.shmoves.app` (Android).
+EAS builds are configured in `apps/mobile/eas.json`. Bundle identifier is `com.shmoves.app` (iOS and Android).
 
 ## Environment Variables
 
-Required in a `.env` file at the project root:
-- `EXPO_PUBLIC_SUPABASE_URL`
-- `EXPO_PUBLIC_SUPABASE_ANON_KEY`
+In `apps/mobile/.env`:
+- `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY` (required)
+- `EXPO_PUBLIC_RAPIDAPI_KEY` (flight lookup), `EXPO_PUBLIC_PEXELS_API_KEY` (hero images), `EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME` / `EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET` (legacy photo uploads — feature removed, keys may still exist)
 
 ## Current Status (July 2026)
 
-We are executing a major refactor. Architecture decisions live in
-docs/adr/ — read all ADRs before making structural changes.
-The "Data Model" section below describes the PRE-refactor state
-that Phase 0 (see ADR 0008) is replacing.
+Phase 0 of the refactor (ADR 0008) is code-complete: normalized schema, monorepo, `packages/core`, unified trips context. The product is group trip planning + trip finance; photos/journal/social were removed (ADR 0002). Next: Phase 1 (remove Apple Sign-In after user migration), Phase 2 (web app).
+
+Migrations `20260706000000` (schema) and `20260706000001` (data) must be applied to Supabase before this app version works; `20260706000002` (drop legacy tables) only after verifying the app runs on the new schema.
 
 ## Architecture
 
-### Routing
+### Data Model (ADR 0003)
 
-Uses **expo-router** (file-based routing). The root layout at `app/_layout.tsx` wraps the entire app in three providers (`AuthProvider` → `TripsProvider` → `SharedTripsProvider`) and handles auth/onboarding redirects via `RootLayoutGate`.
-
-Main routes:
-- `app/auth.tsx` — sign-in/sign-up
-- `app/onboarding.tsx` — first-time profile setup (shown when `profiles.name` is null)
-- `app/(tabs)/` — main tab shell: Plan (`index`), My Shmoves (`my-trips`), Shmovements (`activity`), My Profile (`profile`)
-- `app/trip/[id].tsx` — full trip detail screen (large file, all trip sections rendered here)
-
-Deep links use the `shmoves://invite/TOKEN` scheme. Pending tokens are stashed in AsyncStorage if the user isn't logged in yet and resolved after login in `DeepLinkHandler`.
-
-### Data Model: Personal vs Shared Trips
-
-There are two parallel data systems:
-
-**Personal trips** (`context/trips-context.tsx`):
-- All state lives in React (in-memory) and is persisted as a single JSON blob to the `user_data` Supabase table (`data` column) on every state change.
-- Hydration on login reads this blob and restores all state slices: `trips`, `flightsByTripId`, `itineraryByTripId`, `expensesByTripId`, `journalByTripId`, `housingByTripId`.
-- `hydrationOk` guard prevents persisting empty state if hydration fails.
-
-**Shared trips** (`context/shared-trips-context.tsx`):
-- Stored in the `shared_trips` Supabase table with columns per data type (`flights`, `itinerary`, `expenses`, `housing`, `journal`, `photos`, `feed`).
-- Each CRUD operation does a read-modify-write cycle on the relevant column via `readColumn` / `writeColumn` helpers.
-- Real-time sync via Supabase Postgres `postgres_changes` subscription — any change to `shared_trips` or `trip_members` triggers a full `refresh()`.
-- Membership tracked in `trip_members` table (roles: `owner`/`member`, statuses: `pending`/`accepted`/`declined`).
-- Invites: link-based via `trip_invites` table (token-based), or direct username invite via `profiles.username` lookup.
-- Photos stored as Cloudinary `secure_url` paths.
-- Feed (activity log) appended on each mutation, capped at 200 entries, failures are non-blocking.
-
-### Supabase Tables
+One normalized schema; **a personal trip is just a trip with one member**. There is no personal/shared split anywhere anymore.
 
 | Table | Purpose |
 |---|---|
 | `profiles` | User profile: `id`, `email`, `name`, `username`, `phone`, `avatar_url` |
-| `user_data` | Personal trip blob: `user_id`, `data` (JSONB) |
-| `shared_trips` | Collaborative trips: all data stored as JSONB columns |
-| `trip_members` | Membership/invite rows linking users to shared trips |
+| `trips` | `destination`, `start_date`, `end_date`, `created_by` |
+| `trip_members` | Membership: `role` (`owner`/`member`), `status` (`pending`/`accepted`/`declined`), `invited_by` |
 | `trip_invites` | Token-based invite links |
+| `flights`, `itinerary_days`, `itinerary_items`, `housing` | One row per item; `estimated_cost` + `cost_type` (`total`/`per_person`) + `currency` on each (powers the cost ticker, ADR 0006) |
+| `expenses`, `expense_splits` | `expense_splits` has one row per participant **including the payer**, each with `share_amount` |
+| `settlements` | One row per resolved debtor→creditor pair; debts computed from expenses |
+| `documents` | Schema-only until web v1 |
 
-Edge functions: `supabase/functions/send-invite-sms/` — triggered for SMS invite delivery.
+- Every child table carries `trip_id` so RLS is one membership check and realtime can filter per trip.
+- RLS: accepted members get all four operations on child tables; pending invitees can see the `trips` row only. Membership helpers (`is_trip_member`, `can_view_trip`, `is_trip_owner`) are SECURITY DEFINER.
+- All tables have `REPLICA IDENTITY FULL` so realtime DELETE events carry the whole row.
 
-### Theming
+### packages/core
 
-Colors defined in `constants/theme.ts` as `Colors.light` / `Colors.dark`. Primary brand color is purple (`#7C3AED` light, `#A78BFA` dark). Always use `Colors[colorScheme].*` tokens rather than hardcoded hex values. `ThemedText` and `ThemedView` in `components/` automatically apply theme colors.
+- `types.ts` — camelCase app types (`TripBundle` = trip + members + flights + itinerary + expenses + housing + settlements)
+- `data.ts` — all CRUD + `fetchAllTrips`; every function takes a `SupabaseClient` (each platform owns its client; mobile's is `apps/mobile/config/supabase.ts` with AsyncStorage sessions)
+- `finance.ts` — `computeBalances`, `computeTransfers` (greedy min-transfer), `isPairSettled`, `evenShare`, `sumEstimatedCosts`. Currency-aware via a pluggable converter. **Finance math must live here, never in UI code** — balances may never disagree between platforms.
 
-### Path Aliases
+### Mobile app
 
-`@/` maps to the project root. Use `@/context/...`, `@/components/...`, `@/config/...`, `@/constants/...`, `@/hooks/...` throughout.
+**Routing** (expo-router): root layout wraps the app in `AuthProvider` → `TripsProvider` and handles auth/onboarding redirects. Tabs: Plan (`index`), My Shmoves (`my-trips`), My Profile (`profile`). `app/trip/[id].tsx` is the trip detail screen (large file; renders legacy view shapes derived from the `TripBundle` in one block near the top).
 
-### Key Conventions
+**Trips context** (`context/trips-context.tsx`): single provider over `TripBundle[]` via `@shmoves/core`. Mutations write to Supabase then patch local state optimistically. A debounced `refresh()` runs on any realtime event (all nine tables), on app foreground, and on channel rejoin (ADR 0005).
 
-- Trip IDs for personal trips are deterministic: `` `${destination}|${startDate}|${endDate}` ``.
-- IDs for all other entities (flights, events, expenses, etc.) are generated as `${type}-${Date.now()}-${random}`.
-- Shared trip CRUD always updates local state optimistically via `updateLocalTrip` after the Supabase write.
-- `TripsProvider` takes a `userKey` prop and resets/rehydrates whenever the auth user changes.
+**Invites**: `shmoves://invite/TOKEN` deep links; token stashed in AsyncStorage if logged out and resolved after login (`DeepLinkHandler` in `app/_layout.tsx`). Web invite URLs come with ADR 0007. Any trip can be invited to — there is no "convert to shared" step.
+
+**Home currency** (`context/home-currency-context.tsx`): per-expense currencies converted for display using cached exchange rates; pass its `convertToHome` into core finance functions.
+
+### Theming & Conventions
+
+- Colors in `apps/mobile/constants/theme.ts` (`Colors.light`/`Colors.dark`, purple primary). Always use `Colors[colorScheme].*` tokens; `ThemedText`/`ThemedView` apply them automatically.
+- `@/` maps to `apps/mobile/`; core imports are `@shmoves/core`.
+- All IDs are Postgres-generated UUIDs.
+- Dates are local calendar dates (`YYYY-MM-DD`) — never `toISOString()` on a picker Date (UTC shift bug).
