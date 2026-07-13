@@ -9,6 +9,8 @@
     "start": "npm run start -w mobile",
     "ios": "npm run ios -w mobile",
     "android": "npm run android -w mobile",
-    "lint": "npm run lint -w mobile"
+    "lint": "npm run lint -w mobile",
+    "web": "npm run dev -w web",
+    "web:build": "npm run build -w web"
   }
 }
