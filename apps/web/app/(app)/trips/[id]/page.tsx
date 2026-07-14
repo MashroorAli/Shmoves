@@ -4,6 +4,7 @@ import { use } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
+import { ExpensesTab } from '@/components/expenses/expenses-tab';
 import { ItineraryTab } from '@/components/itinerary/itinerary-tab';
 import { TripHeader } from '@/components/trip/trip-header';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -64,7 +65,7 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
           <ItineraryTab bundle={bundle} />
         </TabsContent>
         <TabsContent value="expenses" className="mt-4">
-          <p className="text-sm text-muted-foreground">Expenses coming up next.</p>
+          <ExpensesTab bundle={bundle} />
         </TabsContent>
       </Tabs>
     </div>
