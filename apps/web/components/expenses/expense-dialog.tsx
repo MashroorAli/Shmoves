@@ -52,6 +52,14 @@ export function ExpenseDialog({
     () => bundle.members.filter((m) => m.status === 'accepted'),
     [bundle.members],
   );
+  // value → label map so SelectValue shows the name, not the raw user id.
+  const memberLabels = useMemo(
+    () =>
+      Object.fromEntries(
+        members.map((m) => [m.userId, m.userId === uid ? 'You' : (m.displayName ?? 'Trip member')]),
+      ),
+    [members, uid],
+  );
 
   const [name, setName] = useState('');
   const [amount, setAmount] = useState('');
@@ -160,6 +168,7 @@ export function ExpenseDialog({
             <Label>Paid by</Label>
             <Select
               value={paidBy || null}
+              items={memberLabels}
               onValueChange={(v: string | null) => v && setPaidBy(v)}
               disabled={busy}
             >
@@ -190,9 +199,11 @@ export function ExpenseDialog({
               ))}
             </div>
             <p className="text-xs text-muted-foreground">
-              {participants.size >= 2 && share != null
-                ? `${formatMoney(share, currency)} each, ${participants.size} people`
-                : 'Fewer than two people checked — the expense won’t be split.'}
+              {participants.size < 2
+                ? 'Fewer than two people checked — the expense won’t be split.'
+                : share != null
+                  ? `${formatMoney(share, currency)} each, ${participants.size} people`
+                  : 'Enter an amount to see each person’s share.'}
             </p>
           </div>
         </div>
