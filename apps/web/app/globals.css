@@ -9,7 +9,8 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-serif: var(--font-display);
+  --font-heading: var(--font-serif);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -49,31 +50,35 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  /* Brand purple — #7C3AED, matches apps/mobile/constants/theme.ts tintColorLight */
-  --primary: oklch(0.541 0.281 293.009);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.541 0.281 293.009);
+  /* "Quiet luxury" palette: warm ivory ground, plum-ink text, deep aubergine
+   * primary (a dressed-up shade of the brand purple), champagne-gold accents. */
+  --background: oklch(0.977 0.005 84);
+  --foreground: oklch(0.235 0.02 305);
+  --card: oklch(0.995 0.002 84);
+  --card-foreground: oklch(0.235 0.02 305);
+  --popover: oklch(0.995 0.002 84);
+  --popover-foreground: oklch(0.235 0.02 305);
+  /* Deep aubergine — the brand purple, aged in oak */
+  --primary: oklch(0.42 0.15 302);
+  --primary-foreground: oklch(0.977 0.005 84);
+  --secondary: oklch(0.945 0.008 84);
+  --secondary-foreground: oklch(0.235 0.02 305);
+  --muted: oklch(0.945 0.008 84);
+  --muted-foreground: oklch(0.51 0.02 300);
+  /* Champagne — used for hovers and highlights */
+  --accent: oklch(0.915 0.045 92);
+  --accent-foreground: oklch(0.32 0.045 80);
+  --destructive: oklch(0.55 0.21 27);
+  --border: oklch(0.905 0.01 84);
+  --input: oklch(0.905 0.01 84);
+  /* Gold focus ring — the jewellery */
+  --ring: oklch(0.72 0.09 88);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
+  --radius: 0.5rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -85,25 +90,25 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  /* Brand purple (dark) — #A78BFA, matches tintColorDark */
-  --primary: oklch(0.702 0.183 293.541);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
+  /* After-dark: near-black plum, ivory text, soft violet primary, gold accents. */
+  --background: oklch(0.168 0.014 310);
+  --foreground: oklch(0.94 0.008 84);
+  --card: oklch(0.207 0.017 310);
+  --card-foreground: oklch(0.94 0.008 84);
+  --popover: oklch(0.207 0.017 310);
+  --popover-foreground: oklch(0.94 0.008 84);
+  --primary: oklch(0.72 0.11 300);
+  --primary-foreground: oklch(0.168 0.014 310);
+  --secondary: oklch(0.26 0.02 310);
+  --secondary-foreground: oklch(0.94 0.008 84);
+  --muted: oklch(0.26 0.02 310);
+  --muted-foreground: oklch(0.72 0.015 300);
+  --accent: oklch(0.32 0.035 305);
+  --accent-foreground: oklch(0.94 0.008 84);
+  --destructive: oklch(0.66 0.19 25);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.702 0.183 293.541);
+  --ring: oklch(0.78 0.09 88);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -125,8 +130,26 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* A faint warm glow at the top of the page — texture without noise. */
+    background-image: radial-gradient(
+      60rem 22rem at 50% -6rem,
+      color-mix(in oklab, var(--primary) 7%, transparent),
+      transparent 70%
+    );
+    background-repeat: no-repeat;
   }
   html {
     @apply font-sans;
+  }
+  /* Display serif for every heading surface. */
+  h1,
+  h2,
+  h3,
+  [data-slot="card-title"],
+  [data-slot="dialog-title"],
+  [data-slot="alert-dialog-title"] {
+    font-family: var(--font-display), Georgia, serif;
+    font-weight: 600;
+    letter-spacing: 0.005em;
   }
 }

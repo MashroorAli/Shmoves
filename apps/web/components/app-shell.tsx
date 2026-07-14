@@ -21,9 +21,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between px-4">
-          <Link href="/trips" className="text-lg font-bold text-primary">
+      <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur">
+        <div className="mx-auto flex h-16 w-full max-w-5xl items-center justify-between px-4">
+          <Link
+            href="/trips"
+            className="font-[family-name:var(--font-display)] text-2xl font-semibold tracking-wide text-foreground transition-colors hover:text-primary"
+          >
             Shmoves
           </Link>
           <DropdownMenu>
@@ -41,7 +44,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </DropdownMenu>
         </div>
       </header>
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6">{children}</main>
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">{children}</main>
     </div>
   );
 }

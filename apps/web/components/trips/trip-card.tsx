@@ -19,11 +19,13 @@ export function TripCard({ bundle }: { bundle: TripBundle }) {
 
   return (
     <Link href={`/trips/${trip.id}`} className="block">
-      <Card className="transition-colors hover:border-primary/50">
-        <CardContent className="flex items-center justify-between gap-4 py-4">
+      <Card className="transition-all hover:-translate-y-0.5 hover:border-ring/60 hover:shadow-md hover:shadow-primary/5">
+        <CardContent className="flex items-center justify-between gap-4 py-5">
           <div className="min-w-0">
-            <p className="truncate font-semibold">{trip.destination}</p>
-            <p className="text-sm text-muted-foreground">{range}</p>
+            <p className="truncate font-[family-name:var(--font-display)] text-lg font-semibold">
+              {trip.destination}
+            </p>
+            <p className="mt-0.5 text-sm text-muted-foreground">{range}</p>
           </div>
           {members.length > 1 && (
             <div className="flex -space-x-2">

@@ -77,10 +77,20 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-sm">
+    <main className="flex min-h-screen flex-col items-center justify-center gap-8 p-4">
+      <div className="text-center">
+        <h1 className="font-[family-name:var(--font-display)] text-5xl font-semibold tracking-wide">
+          Shmoves
+        </h1>
+        <p className="mt-2 text-sm tracking-[0.18em] text-muted-foreground uppercase">
+          Group travel, beautifully planned
+        </p>
+      </div>
+      <Card className="w-full max-w-sm shadow-lg shadow-primary/5">
         <CardHeader>
-          <CardTitle className="text-2xl">Shmoves</CardTitle>
+          <CardTitle className="text-xl">
+            {step === 'email' ? 'Sign in' : 'Check your email'}
+          </CardTitle>
           <CardDescription>
             {step === 'email'
               ? 'Sign in with your email — we’ll send you a 6-digit code.'

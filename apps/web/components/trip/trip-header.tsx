@@ -57,7 +57,7 @@ export function TripHeader({ bundle }: { bundle: TripBundle }) {
   return (
     <div className="flex items-start justify-between gap-4">
       <div>
-        <h1 className="text-2xl font-bold">{trip.destination}</h1>
+        <h1 className="text-3xl">{trip.destination}</h1>
         <p className="text-sm text-muted-foreground">{range}</p>
         {members.length > 1 && (
           <div className="mt-2 flex items-center gap-2">
