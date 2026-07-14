@@ -13,7 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTrips } from '@/context/trips-context';
 
-const TABS = ['itinerary', 'flights', 'stay', 'expenses'] as const;
+const TABS = ['flights', 'stay', 'itinerary', 'expenses'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function TripDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -24,7 +24,7 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
   const searchParams = useSearchParams();
 
   const rawTab = searchParams.get('tab');
-  const tab: Tab = TABS.includes(rawTab as Tab) ? (rawTab as Tab) : 'itinerary';
+  const tab: Tab = TABS.includes(rawTab as Tab) ? (rawTab as Tab) : 'flights';
 
   const bundle = trips.find((t) => t.trip.id === id);
 
@@ -60,19 +60,19 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
         onValueChange={(v: string) => router.replace(`${pathname}?tab=${v}`, { scroll: false })}
       >
         <TabsList>
-          <TabsTrigger value="itinerary">Itinerary</TabsTrigger>
           <TabsTrigger value="flights">Flights</TabsTrigger>
           <TabsTrigger value="stay">Stay</TabsTrigger>
+          <TabsTrigger value="itinerary">Itinerary</TabsTrigger>
           <TabsTrigger value="expenses">Expenses</TabsTrigger>
         </TabsList>
-        <TabsContent value="itinerary" className="mt-4">
-          <ItineraryTab bundle={bundle} />
-        </TabsContent>
         <TabsContent value="flights" className="mt-4">
           <FlightsTab bundle={bundle} />
         </TabsContent>
         <TabsContent value="stay" className="mt-4">
           <HousingTab bundle={bundle} />
+        </TabsContent>
+        <TabsContent value="itinerary" className="mt-4">
+          <ItineraryTab bundle={bundle} />
         </TabsContent>
         <TabsContent value="expenses" className="mt-4">
           <ExpensesTab bundle={bundle} />

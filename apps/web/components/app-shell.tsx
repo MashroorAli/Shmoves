@@ -4,17 +4,9 @@ import Link from 'next/link';
 
 import { useAuth } from '@/context/auth-context';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { user, profileName, profileAvatarUrl, signOut } = useAuth();
+  const { user, profileName, profileAvatarUrl } = useAuth();
 
   const displayName = profileName ?? user?.email ?? '';
   const initial = (displayName || '?').charAt(0).toUpperCase();
@@ -29,19 +21,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             Shmoves
           </Link>
-          <DropdownMenu>
-            <DropdownMenuTrigger className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <Avatar>
-                {profileAvatarUrl && <AvatarImage src={profileAvatarUrl} alt={displayName} />}
-                <AvatarFallback>{initial}</AvatarFallback>
-              </Avatar>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel className="max-w-56 truncate">{displayName}</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => signOut()}>Sign out</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <Link
+            href="/profile"
+            aria-label="My profile"
+            className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Avatar>
+              {profileAvatarUrl && <AvatarImage src={profileAvatarUrl} alt={displayName} />}
+              <AvatarFallback>{initial}</AvatarFallback>
+            </Avatar>
+          </Link>
         </div>
       </header>
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">{children}</main>
