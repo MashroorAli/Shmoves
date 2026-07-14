@@ -37,6 +37,7 @@ export function ItemDialog({
   dayId,
   destination,
   item,
+  defaultStartTime,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -46,6 +47,8 @@ export function ItemDialog({
   destination: string;
   /** Present = edit, absent = create. */
   item?: ItineraryItem;
+  /** Pre-filled start time for new items (matrix view click-to-add). */
+  defaultStartTime?: string;
 }) {
   const { addItineraryItem, updateItineraryItem } = useTrips();
 
@@ -62,7 +65,7 @@ export function ItemDialog({
   useEffect(() => {
     if (open) {
       setName(item?.name ?? '');
-      setStartTime(item?.startTime ?? '');
+      setStartTime(item?.startTime ?? defaultStartTime ?? '');
       setEndTime(item?.endTime ?? '');
       setLocation(item?.location ?? '');
       setNotes(item?.notes ?? '');
@@ -70,7 +73,7 @@ export function ItemDialog({
       setCostType(item?.costType ?? 'total');
       setCurrency(item?.currency ?? inferDestinationCurrency(destination) ?? 'USD');
     }
-  }, [open, item, destination]);
+  }, [open, item, destination, defaultStartTime]);
 
   const save = async () => {
     if (!name.trim()) return;
