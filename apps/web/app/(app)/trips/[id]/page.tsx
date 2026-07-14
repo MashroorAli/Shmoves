@@ -5,13 +5,15 @@ import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 import { ExpensesTab } from '@/components/expenses/expenses-tab';
+import { FlightsTab } from '@/components/flights/flights-tab';
+import { HousingTab } from '@/components/housing/housing-tab';
 import { ItineraryTab } from '@/components/itinerary/itinerary-tab';
 import { TripHeader } from '@/components/trip/trip-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTrips } from '@/context/trips-context';
 
-const TABS = ['itinerary', 'expenses'] as const;
+const TABS = ['itinerary', 'flights', 'stay', 'expenses'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function TripDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -59,10 +61,18 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
       >
         <TabsList>
           <TabsTrigger value="itinerary">Itinerary</TabsTrigger>
+          <TabsTrigger value="flights">Flights</TabsTrigger>
+          <TabsTrigger value="stay">Stay</TabsTrigger>
           <TabsTrigger value="expenses">Expenses</TabsTrigger>
         </TabsList>
         <TabsContent value="itinerary" className="mt-4">
           <ItineraryTab bundle={bundle} />
+        </TabsContent>
+        <TabsContent value="flights" className="mt-4">
+          <FlightsTab bundle={bundle} />
+        </TabsContent>
+        <TabsContent value="stay" className="mt-4">
+          <HousingTab bundle={bundle} />
         </TabsContent>
         <TabsContent value="expenses" className="mt-4">
           <ExpensesTab bundle={bundle} />

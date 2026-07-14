@@ -7,6 +7,7 @@ import { MoreHorizontal } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { toDate } from '@/components/shared/date-field';
+import { InviteDialog } from '@/components/trip/invite-dialog';
 import { TripDialog } from '@/components/trips/trip-dialog';
 import {
   AlertDialog,
@@ -26,16 +27,22 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { useAuth } from '@/context/auth-context';
 import { type TripBundle, useTrips } from '@/context/trips-context';
 
 export function TripHeader({ bundle }: { bundle: TripBundle }) {
   const { trip } = bundle;
-  const { deleteTrip } = useTrips();
+  const { uid } = useAuth();
+  const { deleteTrip, leaveTrip } = useTrips();
   const router = useRouter();
 
   const [editOpen, setEditOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [leaveOpen, setLeaveOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  const isOwner = bundle.members.some((m) => m.userId === uid && m.role === 'owner');
 
   const members = bundle.members.filter((m) => m.status === 'accepted');
   const range =
@@ -83,7 +90,13 @@ export function TripHeader({ bundle }: { bundle: TripBundle }) {
           <MoreHorizontal className="size-5" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={() => setInviteOpen(true)}>Invite people</DropdownMenuItem>
           <DropdownMenuItem onClick={() => setEditOpen(true)}>Edit trip</DropdownMenuItem>
+          {!isOwner && (
+            <DropdownMenuItem variant="destructive" onClick={() => setLeaveOpen(true)}>
+              Leave trip
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem variant="destructive" onClick={() => setDeleteOpen(true)}>
             Delete trip
           </DropdownMenuItem>
@@ -91,6 +104,42 @@ export function TripHeader({ bundle }: { bundle: TripBundle }) {
       </DropdownMenu>
 
       <TripDialog open={editOpen} onOpenChange={setEditOpen} trip={trip} />
+      <InviteDialog
+        open={inviteOpen}
+        onOpenChange={setInviteOpen}
+        tripId={trip.id}
+        destination={trip.destination}
+      />
+
+      <AlertDialog open={leaveOpen} onOpenChange={setLeaveOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Leave “{trip.destination}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You’ll lose access to the trip until someone invites you back.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await leaveTrip(trip.id);
+                  router.replace('/trips');
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : 'Could not leave the trip.');
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? 'Leaving…' : 'Leave trip'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>

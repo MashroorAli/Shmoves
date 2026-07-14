@@ -3,11 +3,9 @@
 // Web port of apps/mobile/context/trips-context.tsx (keep the two in sync —
 // same names/signatures, diffable against the mobile file).
 //
-// v1 scope: trips, itinerary, expenses, settlements. Flights, housing, and
-// the invite mutations exist in the mobile file and land here with those
-// features. Realtime is deferred too: the mobile realtime-channel effect
-// plugs back into debouncedRefresh below; until then, refetch on window
-// focus/visibility is the ADR 0005 backstop.
+// Mutations write to Supabase then patch local state optimistically; a
+// debounced refresh() runs on any realtime event, on tab focus/visibility,
+// and on channel (re)join as the reliability backstop (ADR 0005).
 
 import React, {
   createContext,
@@ -21,23 +19,38 @@ import React, {
 
 import { supabase } from '@/lib/supabase';
 import {
+  acceptInvite as coreAcceptInvite,
   addExpense as coreAddExpense,
+  addFlight as coreAddFlight,
+  addHousing as coreAddHousing,
   addItineraryDay as coreAddItineraryDay,
   addItineraryItem as coreAddItineraryItem,
+  clearFlights as coreClearFlights,
+  createInviteToken,
   createTrip,
+  declineInvite as coreDeclineInvite,
   deleteExpense as coreDeleteExpense,
+  deleteFlight as coreDeleteFlight,
+  deleteHousing as coreDeleteHousing,
   deleteItineraryDay as coreDeleteItineraryDay,
   deleteItineraryItem as coreDeleteItineraryItem,
   deleteTrip as coreDeleteTrip,
   fetchAllTrips,
+  inviteByUserId as coreInviteByUserId,
+  inviteByUsername as coreInviteByUsername,
+  leaveTrip as coreLeaveTrip,
   markSettled as coreMarkSettled,
   replaceItinerary,
+  resolveInviteToken as coreResolveInviteToken,
   unmarkSettled as coreUnmarkSettled,
   updateExpense as coreUpdateExpense,
+  updateFlight as coreUpdateFlight,
   updateItineraryDay as coreUpdateItineraryDay,
   updateItineraryItem as coreUpdateItineraryItem,
   updateTripDetails,
   type ExpenseInput,
+  type FlightInput,
+  type HousingInput,
   type ItineraryItem,
   type ItineraryItemInput,
   type PendingInvite,
@@ -51,6 +64,10 @@ export type {
   ExpenseInput,
   ExpenseSplit,
   ExpenseWithSplits,
+  Flight,
+  FlightInput,
+  Housing,
+  HousingInput,
   ItineraryDay,
   ItineraryDayWithItems,
   ItineraryItem,
@@ -72,6 +89,22 @@ interface TripsContextValue {
   addTrip: (input: TripInput) => Promise<Trip>;
   updateTrip: (tripId: string, input: TripInput) => Promise<void>;
   deleteTrip: (tripId: string) => Promise<void>;
+  leaveTrip: (tripId: string) => Promise<void>;
+
+  acceptInvite: (tripId: string) => Promise<void>;
+  declineInvite: (tripId: string) => Promise<void>;
+  inviteToTrip: (tripId: string) => Promise<string>;
+  inviteByUsername: (tripId: string, username: string) => Promise<void>;
+  inviteByUserId: (tripId: string, targetUserId: string) => Promise<void>;
+  resolveInviteToken: (token: string) => Promise<void>;
+
+  addFlight: (tripId: string, input: FlightInput) => Promise<void>;
+  updateFlight: (tripId: string, flightId: string, input: FlightInput) => Promise<void>;
+  deleteFlight: (tripId: string, flightId: string) => Promise<void>;
+  clearFlights: (tripId: string) => Promise<void>;
+
+  addHousing: (tripId: string, input: HousingInput) => Promise<void>;
+  deleteHousing: (tripId: string, housingId: string) => Promise<void>;
 
   addItineraryDay: (tripId: string, label: string, date: string | null) => Promise<void>;
   updateItineraryDay: (tripId: string, dayId: string, label: string) => Promise<void>;
@@ -145,6 +178,39 @@ export function TripsProvider({ children, uid }: { children: React.ReactNode; ui
     }, REFRESH_DEBOUNCE_MS);
   }, [refresh]);
 
+  // Realtime: coarse refetch on any change to any trip table. Granular
+  // per-event patching is a later optimization; correctness first (ADR 0005).
+  useEffect(() => {
+    if (!uid) return;
+    const tables = [
+      'trips',
+      'trip_members',
+      'flights',
+      'itinerary_days',
+      'itinerary_items',
+      'expenses',
+      'expense_splits',
+      'housing',
+      'settlements',
+    ];
+    let channel = supabase.channel('trips_realtime');
+    for (const table of tables) {
+      channel = channel.on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table },
+        debouncedRefresh,
+      );
+    }
+    channel.subscribe((status) => {
+      // Events during a disconnect are lost, not replayed — refetch on every
+      // (re)join as the backstop (ADR 0005).
+      if (status === 'SUBSCRIBED') debouncedRefresh();
+    });
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [uid, debouncedRefresh]);
+
   // Refetch when the tab regains focus/visibility (ADR 0005 backstop; the
   // web equivalent of mobile's AppState-foreground refetch).
   useEffect(() => {
@@ -194,6 +260,74 @@ export function TripsProvider({ children, uid }: { children: React.ReactNode; ui
       deleteTrip: async (tripId) => {
         await coreDeleteTrip(supabase, tripId);
         setTrips((prev) => prev.filter((t) => t.trip.id !== tripId));
+      },
+      leaveTrip: async (tripId) => {
+        await coreLeaveTrip(supabase, tripId, requireUid());
+        setTrips((prev) => prev.filter((t) => t.trip.id !== tripId));
+      },
+
+      // ── Invites & membership ───────────────────────────────────────────
+      acceptInvite: async (tripId) => {
+        const invite = pendingInvites.find((i) => i.tripId === tripId);
+        if (!invite) throw new Error('Invite not found.');
+        await coreAcceptInvite(supabase, invite.memberRowId);
+        await refresh();
+      },
+      declineInvite: async (tripId) => {
+        const invite = pendingInvites.find((i) => i.tripId === tripId);
+        if (!invite) throw new Error('Invite not found.');
+        await coreDeclineInvite(supabase, invite.memberRowId);
+        setPendingInvites((prev) => prev.filter((i) => i.tripId !== tripId));
+      },
+      inviteToTrip: (tripId) => createInviteToken(supabase, tripId, requireUid()),
+      inviteByUsername: async (tripId, username) => {
+        await coreInviteByUsername(supabase, tripId, requireUid(), username);
+        await refresh();
+      },
+      inviteByUserId: async (tripId, targetUserId) => {
+        await coreInviteByUserId(supabase, tripId, requireUid(), targetUserId);
+        await refresh();
+      },
+      resolveInviteToken: async (token) => {
+        await coreResolveInviteToken(supabase, requireUid(), token);
+        await refresh();
+      },
+
+      // ── Flights ────────────────────────────────────────────────────────
+      addFlight: async (tripId, input) => {
+        const flight = await coreAddFlight(supabase, tripId, requireUid(), input);
+        updateLocalTrip(tripId, (t) => ({ ...t, flights: [...t.flights, flight] }));
+      },
+      updateFlight: async (tripId, flightId, input) => {
+        const flight = await coreUpdateFlight(supabase, flightId, input);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          flights: t.flights.map((f) => (f.id === flightId ? flight : f)),
+        }));
+      },
+      deleteFlight: async (tripId, flightId) => {
+        await coreDeleteFlight(supabase, flightId);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          flights: t.flights.filter((f) => f.id !== flightId),
+        }));
+      },
+      clearFlights: async (tripId) => {
+        await coreClearFlights(supabase, tripId);
+        updateLocalTrip(tripId, (t) => ({ ...t, flights: [] }));
+      },
+
+      // ── Housing ────────────────────────────────────────────────────────
+      addHousing: async (tripId, input) => {
+        const housing = await coreAddHousing(supabase, tripId, requireUid(), input);
+        updateLocalTrip(tripId, (t) => ({ ...t, housing: [...t.housing, housing] }));
+      },
+      deleteHousing: async (tripId, housingId) => {
+        await coreDeleteHousing(supabase, housingId);
+        updateLocalTrip(tripId, (t) => ({
+          ...t,
+          housing: t.housing.filter((h) => h.id !== housingId),
+        }));
       },
 
       // ── Itinerary ──────────────────────────────────────────────────────

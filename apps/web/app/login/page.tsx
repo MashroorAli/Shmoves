@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
@@ -13,9 +13,15 @@ import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp
 
 const RESEND_SECONDS = 30;
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, isLoading } = useAuth();
+
+  // Post-login destination (e.g. an invite link that sent us here). Only
+  // same-origin paths — never redirect off-site.
+  const rawNext = searchParams.get('next');
+  const next = rawNext && rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/trips';
 
   const [step, setStep] = useState<'email' | 'code'>('email');
   const [email, setEmail] = useState('');
@@ -25,8 +31,8 @@ export default function LoginPage() {
   const [resendIn, setResendIn] = useState(0);
 
   useEffect(() => {
-    if (!isLoading && user) router.replace('/trips');
-  }, [isLoading, user, router]);
+    if (!isLoading && user) router.replace(next);
+  }, [isLoading, user, router, next]);
 
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -67,7 +73,7 @@ export default function LoginPage() {
         type: 'email',
       });
       if (err) throw err;
-      router.replace('/trips');
+      router.replace(next);
     } catch (e) {
       setCode('');
       setError(e instanceof Error ? e.message : 'That code did not work.');
@@ -165,5 +171,14 @@ export default function LoginPage() {
         </CardContent>
       </Card>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  // useSearchParams requires a Suspense boundary during prerender.
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
   );
 }
