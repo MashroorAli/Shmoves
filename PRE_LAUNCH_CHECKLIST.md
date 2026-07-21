@@ -1,6 +1,12 @@
 # Shmoves — Pre-Launch Checklist
 
+> Current phase per ADR 0008: Phase 0 (backend refactor) and most of Phase 2
+> (web app v1) are done. Phase 1 (app slim-down, remove Apple Sign-In) has not
+> started — it's gated on the Apple→email user migration below.
+
 ## 🔐 Auth & Security
+
+- [ ] Complete Apple→email user migration (`docs/apple-user-migration.md`) — blocks removing Apple Sign-In (Phase 1)
 - [x] Replace phone/SMS auth (Twilio) with Apple Sign In + Email OTP
 - [x] Enable Apple provider in Supabase (Auth → Providers)
 - [x] Enable Email OTP provider in Supabase (Auth → Providers)
